@@ -1,8 +1,8 @@
-import { useState, type FormEvent } from "react";
-import type { CreateRoomResponse } from "../shared/protocol";
+import { useEffect, useState, type FormEvent } from "react";
+import type { CreateRoomResponse, RoomCreation, ServerConfig } from "../shared/protocol";
 import { inviteLink, load, remove, save } from "./storage";
 
-type SavedRoom = { roomId: string; link: string; createdAt: number };
+type SavedRoom = { roomId: string; link: string; createdAt: number; ownerKey?: string };
 
 const KEY_STORE = "creatorKey";
 const ROOMS_STORE = "myRooms";
@@ -14,20 +14,32 @@ export function Home() {
   const [name, setName] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState<RoomCreation | null>(null);
+  const [showKeyForm, setShowKeyForm] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/config")
+      .then((r) => r.json() as Promise<ServerConfig>)
+      .then((c) => setMode(c.roomCreation))
+      .catch(() => setMode("key"));
+  }, []);
 
   function storeRooms(next: SavedRoom[]) {
     setRooms(next);
     save(ROOMS_STORE, next);
   }
 
-  async function request(roomName: string, rotate: boolean) {
+  async function request(roomName: string, rotate: boolean, ownerKey?: string) {
     setBusy(true);
     setError("");
     try {
       const res = await fetch("/api/rooms", {
         method: "POST",
-        headers: { Authorization: `Bearer ${creatorKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ name: roomName, rotate }),
+        headers: {
+          ...(creatorKey ? { Authorization: `Bearer ${creatorKey}` } : {}),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ name: roomName, rotate, ownerKey }),
       });
       const body = await res.json();
       if (res.status === 401) {
@@ -36,8 +48,14 @@ export function Home() {
       }
       if (!res.ok) throw new Error(body.error ?? `Request failed (${res.status})`);
 
-      const { roomId, token } = body as CreateRoomResponse;
-      const room = { roomId, link: inviteLink(roomId, token), createdAt: Date.now() };
+      const created = body as CreateRoomResponse;
+      const { roomId } = created;
+      const room = {
+        roomId,
+        link: inviteLink(roomId, created.token),
+        createdAt: Date.now(),
+        ownerKey: created.ownerKey ?? ownerKey,
+      };
       storeRooms([room, ...rooms.filter((r) => r.roomId !== roomId)]);
       setName("");
     } catch (e) {
@@ -54,6 +72,7 @@ export function Home() {
     save(KEY_STORE, key);
     setCreatorKey(key);
     setKeyDraft("");
+    setShowKeyForm(false);
   }
 
   function submitRoom(e: FormEvent) {
@@ -66,24 +85,14 @@ export function Home() {
       <h1 className="brand">stream</h1>
       <p className="muted">Rooms for watching each other's games. Join with an invite link.</p>
 
-      {!creatorKey ? (
-        <form className="card" onSubmit={submitKey}>
-          <label htmlFor="key">Creator key</label>
-          <p className="muted small">Only needed to create rooms. Saved in this browser.</p>
-          <div className="row">
-            <input
-              id="key"
-              type="password"
-              value={keyDraft}
-              onChange={(e) => setKeyDraft(e.target.value)}
-              autoComplete="off"
-            />
-            <button type="submit">Save</button>
-          </div>
-        </form>
+      {mode === null ? null : mode === "key" && !creatorKey ? (
+        <KeyForm draft={keyDraft} setDraft={setKeyDraft} onSubmit={submitKey} />
       ) : (
         <form className="card" onSubmit={submitRoom}>
           <label htmlFor="name">New room</label>
+          {mode === "open" && (
+            <p className="muted small">Anyone with this site's address can make rooms here. Only people with the invite link can join one.</p>
+          )}
           <div className="row">
             <input
               id="name"
@@ -96,17 +105,29 @@ export function Home() {
               Create
             </button>
           </div>
-          <button
-            type="button"
-            className="link small"
-            onClick={() => {
-              remove(KEY_STORE);
-              setCreatorKey("");
-            }}
-          >
-            Forget creator key
-          </button>
+          {creatorKey ? (
+            <button
+              type="button"
+              className="link small"
+              onClick={() => {
+                remove(KEY_STORE);
+                setCreatorKey("");
+              }}
+            >
+              Forget creator key
+            </button>
+          ) : (
+            !showKeyForm && (
+              <button type="button" className="link small" onClick={() => setShowKeyForm(true)}>
+                I have the creator key
+              </button>
+            )
+          )}
         </form>
+      )}
+
+      {mode === "open" && !creatorKey && showKeyForm && (
+        <KeyForm draft={keyDraft} setDraft={setKeyDraft} onSubmit={submitKey} admin />
       )}
 
       {error && <p className="error">{error}</p>}
@@ -119,10 +140,10 @@ export function Home() {
               <RoomRow
                 key={r.roomId}
                 room={r}
-                canRotate={!!creatorKey && !busy}
+                canRotate={(!!creatorKey || !!r.ownerKey) && !busy}
                 onRotate={() => {
                   if (confirm(`Rotate the link for "${r.roomId}"? The old link stops working and everyone in the room is disconnected.`)) {
-                    request(r.roomId, true);
+                    request(r.roomId, true, r.ownerKey);
                   }
                 }}
                 onForget={() => storeRooms(rooms.filter((x) => x.roomId !== r.roomId))}
@@ -132,6 +153,34 @@ export function Home() {
         </section>
       )}
     </main>
+  );
+}
+
+function KeyForm(props: {
+  draft: string;
+  setDraft: (v: string) => void;
+  onSubmit: (e: FormEvent) => void;
+  admin?: boolean;
+}) {
+  return (
+    <form className="card" onSubmit={props.onSubmit}>
+      <label htmlFor="key">Creator key</label>
+      <p className="muted small">
+        {props.admin
+          ? "Lets you rotate any room's link on this server. Saved in this browser."
+          : "Only needed to make rooms. Ask whoever runs this server. Saved in this browser."}
+      </p>
+      <div className="row">
+        <input
+          id="key"
+          type="password"
+          value={props.draft}
+          onChange={(e) => props.setDraft(e.target.value)}
+          autoComplete="off"
+        />
+        <button type="submit">Save</button>
+      </div>
+    </form>
   );
 }
 

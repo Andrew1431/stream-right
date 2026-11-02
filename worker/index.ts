@@ -1,4 +1,10 @@
-import { ROOM_ID_PATTERN, type CreateRoomRequest, type CreateRoomResponse } from "../shared/protocol";
+import {
+  ROOM_ID_PATTERN,
+  type CreateRoomRequest,
+  type CreateRoomResponse,
+  type RoomCreation,
+  type ServerConfig,
+} from "../shared/protocol";
 import { safeEqual } from "./crypto";
 
 export { Room } from "./room";
@@ -14,12 +20,9 @@ function slugify(name: string): string {
     .replace(/-+$/, "");
 }
 
-async function createRoom(req: Request, env: Env): Promise<Response> {
-  const key = req.headers.get("Authorization")?.replace(/^Bearer /, "") ?? "";
-  if (!env.CREATOR_KEY || !(await safeEqual(key, env.CREATOR_KEY))) {
-    return json({ error: "Invalid creator key" }, 401);
-  }
+const roomCreation = (env: Env): RoomCreation => (env.ROOM_CREATION === "open" ? "open" : "key");
 
+async function createRoom(req: Request, env: Env): Promise<Response> {
   let body: CreateRoomRequest;
   try {
     body = await req.json();
@@ -27,18 +30,33 @@ async function createRoom(req: Request, env: Env): Promise<Response> {
     return json({ error: "Invalid JSON" }, 400);
   }
 
+  const key = req.headers.get("Authorization")?.replace(/^Bearer /, "") ?? "";
+  const admin = !!key && !!env.CREATOR_KEY && (await safeEqual(key, env.CREATOR_KEY));
+  const rotate = body.rotate === true;
+  // Rotation is checked by the room itself: admin or the room's owner key.
+  if (!admin && !rotate && roomCreation(env) === "key") return json({ error: "Invalid creator key" }, 401);
+
   const roomId = slugify(String(body.name ?? ""));
   if (!ROOM_ID_PATTERN.test(roomId)) return json({ error: "Room name needs letters or numbers" }, 400);
 
-  const token = await env.ROOMS.getByName(roomId).issueToken(body.rotate === true);
-  if (!token) return json({ error: "Room already exists. Rotate its link to get a new one." }, 409);
+  const ownerKey = typeof body.ownerKey === "string" ? body.ownerKey.slice(0, 128) : undefined;
+  const result = await env.ROOMS.getByName(roomId).issueToken({ rotate, admin, ownerKey });
+  if (!result.ok) {
+    return result.reason === "exists"
+      ? json({ error: "That room name is taken. Pick another, or rotate its link if it's yours." }, 409)
+      : json({ error: "Only the room's creator can rotate its link." }, 403);
+  }
 
-  return json({ roomId, token } satisfies CreateRoomResponse, 201);
+  return json({ roomId, token: result.token, ownerKey: result.ownerKey } satisfies CreateRoomResponse, 201);
 }
 
 export default {
   async fetch(req, env): Promise<Response> {
     const { pathname } = new URL(req.url);
+
+    if (pathname === "/api/config") {
+      return json({ roomCreation: roomCreation(env) } satisfies ServerConfig);
+    }
 
     if (pathname === "/api/rooms") {
       if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);

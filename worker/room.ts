@@ -87,13 +87,28 @@ export class Room extends DurableObject<Env> {
     });
   }
 
-  // Returns the new invite token, or null when the room exists and rotate is false.
-  async issueToken(rotate: boolean): Promise<string | null> {
+  // Makes the room, or rotates its link when rotate is set and the caller is the server admin
+  // (creator key) or the room's owner. Rooms made before owner keys existed get one on their
+  // next admin rotation.
+  async issueToken(opts: { rotate: boolean; admin: boolean; ownerKey?: string }): Promise<
+    { ok: true; token: string; ownerKey?: string } | { ok: false; reason: "exists" | "forbidden" }
+  > {
     const existing = await this.ctx.storage.get<string>("tokenHash");
-    if (existing && !rotate) return null;
+    if (existing && !opts.rotate) return { ok: false, reason: "exists" };
+
+    const ownerHash = await this.ctx.storage.get<string>("ownerHash");
+    if (existing) {
+      const isOwner = !!ownerHash && !!opts.ownerKey && (await safeEqual(await sha256Hex(opts.ownerKey), ownerHash));
+      if (!opts.admin && !isOwner) return { ok: false, reason: "forbidden" };
+    }
 
     const token = randomToken();
     await this.ctx.storage.put("tokenHash", await sha256Hex(token));
+    let ownerKey: string | undefined;
+    if (!ownerHash) {
+      ownerKey = randomToken();
+      await this.ctx.storage.put("ownerHash", await sha256Hex(ownerKey));
+    }
     if (existing) {
       for (const ws of this.ctx.getWebSockets()) ws.close(CloseCode.TokenRotated, "Invite link was rotated");
       // OBS keys were handed out to holders of the old link; revoke them too.
@@ -101,7 +116,7 @@ export class Room extends DurableObject<Env> {
       await this.ctx.storage.delete([...keys.keys()]);
       for (const s of [...this.obs.values()]) await this.endObs(s);
     }
-    return token;
+    return { ok: true, token, ownerKey };
   }
 
   async fetch(req: Request): Promise<Response> {

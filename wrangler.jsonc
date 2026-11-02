@@ -11,6 +11,12 @@
     "bindings": [{ "name": "ROOMS", "class_name": "Room" }]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room"] }],
-  "routes": [{ "pattern": "stream.hartwigdev.ca", "custom_domain": true }],
+  // Served at <name>.<your-subdomain>.workers.dev. For your own domain, set CUSTOM_DOMAIN in .env
+  // (see .env.example) and deploy with `npm run deploy`.
+  "workers_dev": true,
+  "vars": {
+    // "key": rooms need the creator key. "open": anyone with the site's address can make rooms.
+    "ROOM_CREATION": "key"
+  },
   "observability": { "enabled": true }
 }

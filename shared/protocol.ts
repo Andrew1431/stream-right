@@ -94,5 +94,11 @@ export const CloseCode = {
   Replaced: 4009,
 } as const;
 
-export type CreateRoomRequest = { name: string; rotate?: boolean };
-export type CreateRoomResponse = { roomId: string; token: string };
+// "key": only holders of the server's creator key make rooms. "open": anyone who can reach the server can.
+export type RoomCreation = "key" | "open";
+export type ServerConfig = { roomCreation: RoomCreation };
+
+// ownerKey proves you made the room, so you can rotate its link without the creator key.
+export type CreateRoomRequest = { name: string; rotate?: boolean; ownerKey?: string };
+// ownerKey is only sent when a new one was made; keep the one you have otherwise.
+export type CreateRoomResponse = { roomId: string; token: string; ownerKey?: string };

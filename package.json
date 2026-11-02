@@ -4,8 +4,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "deploy": "npm run build && wrangler deploy",
-    "cf-typegen": "wrangler types worker/worker-configuration.d.ts"
+    "deploy": "node scripts/deploy.mjs",
+    "cf-typegen": "wrangler types worker/worker-configuration.d.ts --strict-vars false"
   },
   "type": "module",
   "private": true,

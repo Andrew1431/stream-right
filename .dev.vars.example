@@ -1,3 +1,5 @@
-CREATOR_KEY=change-me
-REALTIME_APP_ID=your-sfu-app-id
-REALTIME_APP_SECRET=your-sfu-app-secret
+# Server password for making rooms (any long random string). Friends only need invite links.
+CREATOR_KEY=
+# From Cloudflare dashboard > Realtime > SFU > your app.
+REALTIME_APP_ID=
+REALTIME_APP_SECRET=
