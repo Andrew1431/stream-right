@@ -66,6 +66,7 @@
       font-variation-settings: "wdth" 118;
     }
     .hero p.lede { max-width: var(--measure); margin: 26px 0 0; font-size: 20px; color: var(--platinum-lo); }
+    .hero p.lede-sub { max-width: var(--measure); margin: 14px 0 0; font-size: 16px; color: var(--pewter); }
     .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 32px; }
     .btn {
       display: inline-flex; align-items: center; gap: 10px; padding: 13px 20px; border-radius: 10px;
@@ -199,8 +200,9 @@
 
     <main>
       <div class="hero">
-        <h1>Tired of streaming to friends at Discord's 720p30?</h1>
-        <p class="lede">stream replaces Discord's Go Live for your friend group. Stay in your Discord call for voice, and watch each other's games here at whatever resolution and frame rate you send, with no Nitro. Everyone can stream at once, and you host it on your own Cloudflare account, so there's no subscription and no per-seat fee.</p>
+        <h1>Watch your friends play, at the quality they play at.</h1>
+        <p class="lede">Private rooms where everyone can stream at once, at whatever resolution and frame rate they choose, and each viewer picks what they watch. You host it on your own Cloudflare account, so there's no subscription and no per-seat fee.</p>
+        <p class="lede-sub">Tired of Discord's 720p30 screen share? Keep the Discord call for voice and watch each other here instead, no Nitro needed.</p>
         <div class="actions">
           <a class="btn primary" href="https://deploy.workers.cloudflare.com/?url=https://github.com/Andrew1431/stream-right">Deploy to Cloudflare</a>
           <a class="btn steel" href="https://github.com/Andrew1431/stream-right#set-it-up">Read the setup guide</a>
