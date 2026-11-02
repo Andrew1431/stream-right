@@ -210,7 +210,8 @@ export class Subscriber {
   }
 
   // Bring pulled tracks in line with `want` (publisher stream → preferred video layer).
-  sync(want: Map<Stream, Layer>) {
+  // A null layer pulls audio only (used while the tab is hidden).
+  sync(want: Map<Stream, Layer | null>) {
     this.queue = this.queue
       .then(() => this.apply(want))
       .then(() => this.onError(null))
@@ -255,12 +256,13 @@ export class Subscriber {
     });
   }
 
-  private async apply(want: Map<Stream, Layer>) {
+  private async apply(want: Map<Stream, Layer | null>) {
     if (this.closed) return;
 
     const desired = new Map<string, PullTrack>();
     for (const [stream, layer] of want) {
       for (const trackName of stream.tracks) {
+        if (trackName === "video" && !layer) continue;
         const t: PullTrack = { sessionId: stream.sessionId, trackName, ...(trackName === "video" ? layer : {}) };
         desired.set(keyOf(t), t);
       }

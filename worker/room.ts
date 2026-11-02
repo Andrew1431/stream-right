@@ -31,6 +31,8 @@ const BROWSER_RIDS = [...RIDS];
 const OBS_HEALTH_INTERVAL_MS = 30_000;
 const OBS_STARTUP_GRACE_MS = 20_000;
 const OBS_KEY_PREFIX = "obskey:";
+// Prefix of the key's SHA-256, shared with the room so the key holder can spot their own stream.
+const OBS_KEY_ID_LENGTH = 16;
 
 type Authed = { authed: true; clientId: string; sessions: string[] } & Member;
 type Attachment = { authed: false; connectedAt: number } | Authed;
@@ -64,6 +66,7 @@ const obsMember = (s: ObsStream): Member => ({
   joinedAt: s.startedAt,
   stream: { sessionId: s.sessionId, tracks: s.tracks, preset: "obs", rids: s.rids },
   obs: true,
+  obsKeyId: s.keyHash.slice(0, OBS_KEY_ID_LENGTH),
 });
 
 const text = (body: string, status: number, headers: Record<string, string> = {}) =>

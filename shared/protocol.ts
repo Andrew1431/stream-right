@@ -22,6 +22,8 @@ export type Member = {
   stream: Stream | null;
   // Streams pushed from OBS over WHIP appear as their own member.
   obs?: boolean;
+  // First 16 hex chars of SHA-256(OBS token); lets the token holder recognise their stream.
+  obsKeyId?: string;
 };
 
 export type SessionDescription = { type: "offer" | "answer"; sdp: string };

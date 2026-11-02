@@ -13,7 +13,8 @@ import {
   type PresetId,
   type ShareSettings,
 } from "./media";
-import { ObsPanel } from "./ObsPanel";
+import { loadObsKey, ObsPanel, obsKeyId } from "./ObsPanel";
+import { SelfPreview, useHiddenFor, usePageActive } from "./SelfPreview";
 import { load, save } from "./storage";
 
 const NAME_STORE = "displayName";
@@ -32,6 +33,8 @@ const QUALITIES: { id: Quality; label: string }[] = [
 ];
 
 const THUMB_LAYER: Layer = { rid: "q", fixed: false };
+// After the tab has been hidden this long, stop pulling video and keep only audio.
+const HIDDEN_VIDEO_OFF_MS = 15_000;
 
 function readToken(): string {
   return new URLSearchParams(location.hash.slice(1)).get("k") ?? "";
@@ -120,6 +123,20 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
   const [focusId, setFocusId] = useState<string | null>(null);
   const [quality, setQuality] = useState<Quality>("auto");
   const [showObs, setShowObs] = useState(false);
+  const [obsKey, setObsKey] = useState(() => loadObsKey(props.roomId));
+  const [myObsKeyId, setMyObsKeyId] = useState("");
+  const [obsPreview, setObsPreview] = useState(false);
+  const { active: pageActive } = usePageActive();
+  const tabHidden = useHiddenFor(HIDDEN_VIDEO_OFF_MS);
+
+  useEffect(() => {
+    let current = true;
+    if (obsKey) obsKeyId(obsKey).then((id) => current && setMyObsKeyId(id));
+    else setMyObsKeyId("");
+    return () => {
+      current = false;
+    };
+  }, [obsKey]);
   const [layout, setLayout] = useState<LayoutMode>(() => (load<string>(LAYOUT_STORE, "focus") === "split" ? "split" : "focus"));
 
   // SFU sessions don't survive a reconnect: drop everything and start over on each epoch.
@@ -141,9 +158,11 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
   }, [conn, epoch, status.kind === "connected"]);
 
   const streaming = members.filter((m) => m.stream);
-  // Your own share stays in a small corner preview: showing it full size while sharing the
-  // whole screen recaptures itself in a feedback loop (and wastes GPU).
-  const watching = streaming.filter((m) => m.id !== you);
+  // Your own streams (browser share and OBS) stay in a small corner preview: showing them full
+  // size recaptures your screen in a feedback loop, and pulling your own OBS stream costs bandwidth.
+  const isMine = (m: Member) => m.id === you || (!!m.obs && !!myObsKeyId && m.obsKeyId === myObsKeyId);
+  const watching = streaming.filter((m) => !isMine(m));
+  const myObs = streaming.find((m) => m.obs && isMine(m)) ?? null;
   const focused = watching.find((m) => m.id === focusId) ?? watching[0] ?? null;
   const split = layout === "split" && watching.length > 1;
   const remoteCount = watching.length;
@@ -156,13 +175,15 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
 
   useEffect(() => {
     if (!subscriber) return;
-    const want = new Map<Stream, Layer>();
-    for (const m of streaming) {
-      if (m.id === you || !m.stream) continue;
-      want.set(m.stream, split || m.id === focused?.id ? bigLayer : THUMB_LAYER);
+    const want = new Map<Stream, Layer | null>();
+    for (const m of watching) {
+      if (!m.stream) continue;
+      // Hidden tab: keep the audio, drop the video so an idle tab doesn't burn bandwidth.
+      want.set(m.stream, tabHidden ? null : split || m.id === focused?.id ? bigLayer : THUMB_LAYER);
     }
+    if (myObs?.stream && obsPreview && pageActive) want.set(myObs.stream, THUMB_LAYER);
     subscriber.sync(want);
-  }, [subscriber, streamingKey(streaming), focused?.id, split, bigLayer.rid, bigLayer.fixed, you]);
+  }, [subscriber, streamingKey(streaming), myObsKeyId, focused?.id, split, bigLayer.rid, bigLayer.fixed, tabHidden, obsPreview, pageActive]);
 
   async function startShare() {
     setError("");
@@ -298,12 +319,37 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
       </header>
 
       {showObs && (
-        <ObsPanel conn={conn} roomId={props.roomId} connected={status.kind === "connected"} onClose={() => setShowObs(false)} />
+        <ObsPanel
+          conn={conn}
+          roomId={props.roomId}
+          connected={status.kind === "connected"}
+          obsKey={obsKey}
+          onKey={setObsKey}
+          onClose={() => setShowObs(false)}
+        />
       )}
 
       {(error || viewError) && <p className="error banner">{error || viewError}</p>}
 
-      {localStream && me && <div className="self-preview">{tile(me, "thumb")}</div>}
+      {((localStream && me) || myObs) && (
+        <SelfPreview title={localStream && myObs ? "You're live (browser + OBS)" : myObs ? "You're live from OBS" : "You're sharing"}>
+          {localStream && me && (
+            <VideoTile member={me} stream={localStream} isYou paused={!pageActive} />
+          )}
+          {myObs &&
+            (obsPreview ? (
+              <VideoTile member={myObs} stream={streamFor(myObs)} isYou paused={!pageActive} />
+            ) : (
+              <div className="obs-live-card small">
+                <span className="muted">Your OBS stream is live. Previewing it pulls it back down, which uses bandwidth.</span>
+                <button type="button" className="chip" onClick={() => setObsPreview(true)}>Show preview</button>
+              </div>
+            ))}
+          {myObs && obsPreview && (
+            <button type="button" className="link small" onClick={() => setObsPreview(false)}>Hide OBS preview</button>
+          )}
+        </SelfPreview>
+      )}
 
       {watching.length === 0 ? (
         <div className="stage empty muted">
@@ -345,15 +391,18 @@ function streamingKey(members: Member[]): string {
   return members.map((m) => `${m.id}:${m.stream?.sessionId}:${m.stream?.tracks.join(",")}`).join("|");
 }
 
-function VideoTile(props: { member: Member; stream: MediaStream | null; isYou: boolean; big?: boolean }) {
+function VideoTile(props: { member: Member; stream: MediaStream | null; isYou: boolean; big?: boolean; paused?: boolean }) {
   const ref = useRef<HTMLVideoElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const [muted, setMuted] = useState(true);
-  const stats = useVideoStats(ref, props.stream);
 
+  // Detaching the stream while paused stops the element from compositing frames; the
+  // track itself keeps feeding the encoder, so viewers are unaffected.
+  const shown = props.paused ? null : props.stream;
+  const stats = useVideoStats(ref, shown);
   useEffect(() => {
-    if (ref.current && ref.current.srcObject !== props.stream) ref.current.srcObject = props.stream;
-  }, [props.stream]);
+    if (ref.current && ref.current.srcObject !== shown) ref.current.srcObject = shown;
+  }, [shown]);
 
   const hasAudio = !props.isYou && !!props.stream?.getAudioTracks().length;
 
@@ -365,7 +414,11 @@ function VideoTile(props: { member: Member; stream: MediaStream | null; isYou: b
   return (
     <div ref={boxRef} className={props.big ? "tile big" : "tile"} onDoubleClick={props.big ? toggleFullscreen : undefined}>
       <video ref={ref} autoPlay playsInline muted={props.isYou || muted} />
-      {!props.stream && <div className="tile-empty">Connecting…</div>}
+      {props.paused ? (
+        <div className="tile-empty small">Preview paused while this window isn't focused</div>
+      ) : (
+        !props.stream && <div className="tile-empty">Connecting…</div>
+      )}
       <div className="tile-label">
         {props.member.name}
         {props.isYou && " (you)"}

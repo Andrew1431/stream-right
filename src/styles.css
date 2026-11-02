@@ -357,12 +357,60 @@ button.thumb:hover {
 
 .self-preview {
   position: fixed;
-  right: 16px;
-  bottom: 16px;
-  width: 240px;
+  width: 280px;
   z-index: 10;
-  box-shadow: 0 4px 16px rgb(0 0 0 / 0.5);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.5);
+  overflow: hidden;
+}
+
+.self-preview.collapsed {
+  width: auto;
+}
+
+.self-preview-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 12px;
+  font-size: 0.85rem;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.self-preview-bar:active {
+  cursor: grabbing;
+}
+
+.self-preview-bar button {
+  padding: 2px 8px;
+  background: none;
+  color: var(--muted);
+}
+
+.self-preview-body {
+  display: grid;
+  gap: 8px;
+  padding: 0 8px 8px;
+}
+
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--err);
+  flex: none;
+}
+
+.obs-live-card {
+  display: grid;
+  gap: 8px;
+  padding: 8px;
   border-radius: 8px;
+  background: var(--bg);
 }
 
 .obs-panel {

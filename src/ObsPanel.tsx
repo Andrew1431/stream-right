@@ -1,13 +1,28 @@
 import { useEffect, useState } from "react";
 import type { RoomConnection } from "./connection";
-import { load, remove, save } from "./storage";
+import { load, save } from "./storage";
 
 const keyStore = (roomId: string) => `obsKey:${roomId}`;
 
+export const loadObsKey = (roomId: string) => load(keyStore(roomId), "");
+
+// SHA-256 prefix the server shows on OBS members, so we can tell which OBS stream is ours.
+export async function obsKeyId(key: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 16);
+}
+
 // Shows the WHIP server and bearer token to paste into OBS. The key is kept per room in
 // this browser so OBS settings stay valid; rotating the room's invite link revokes it.
-export function ObsPanel(props: { conn: RoomConnection; roomId: string; connected: boolean; onClose: () => void }) {
-  const [key, setKey] = useState<string>(() => load(keyStore(props.roomId), ""));
+export function ObsPanel(props: {
+  conn: RoomConnection;
+  roomId: string;
+  connected: boolean;
+  obsKey: string;
+  onKey: (key: string) => void;
+  onClose: () => void;
+}) {
+  const key = props.obsKey;
   const [reveal, setReveal] = useState(false);
   const [error, setError] = useState("");
   const server = `${location.origin}/api/rooms/${props.roomId}/whip`;
@@ -17,8 +32,8 @@ export function ObsPanel(props: { conn: RoomConnection; roomId: string; connecte
     try {
       const res = await props.conn.request({ op: "obsKey" });
       if (!res.obsKey) throw new Error("No key returned");
-      setKey(res.obsKey);
       save(keyStore(props.roomId), res.obsKey);
+      props.onKey(res.obsKey);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -63,10 +78,7 @@ export function ObsPanel(props: { conn: RoomConnection; roomId: string; connecte
           type="button"
           className="link"
           disabled={!props.connected}
-          onClick={() => {
-            remove(keyStore(props.roomId));
-            newKey();
-          }}
+          onClick={newKey}
         >
           Make a new token
         </button>
