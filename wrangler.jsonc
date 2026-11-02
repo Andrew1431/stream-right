@@ -15,9 +15,5 @@
   // (see .env.example) and deploy with `npm run deploy`.
   "workers_dev": true,
   "preview_urls": false,
-  "vars": {
-    // "key": rooms need the creator key. "open": anyone with the site's address can make rooms.
-    "ROOM_CREATION": "key"
-  },
   "observability": { "enabled": true }
 }

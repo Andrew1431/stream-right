@@ -2,8 +2,6 @@ import {
   ROOM_ID_PATTERN,
   type CreateRoomRequest,
   type CreateRoomResponse,
-  type RoomCreation,
-  type ServerConfig,
 } from "../shared/protocol";
 import { safeEqual } from "./crypto";
 
@@ -20,8 +18,6 @@ function slugify(name: string): string {
     .replace(/-+$/, "");
 }
 
-const roomCreation = (env: Env): RoomCreation => (env.ROOM_CREATION === "open" ? "open" : "key");
-
 async function createRoom(req: Request, env: Env): Promise<Response> {
   let body: CreateRoomRequest;
   try {
@@ -34,7 +30,7 @@ async function createRoom(req: Request, env: Env): Promise<Response> {
   const admin = !!key && !!env.CREATOR_KEY && (await safeEqual(key, env.CREATOR_KEY));
   const rotate = body.rotate === true;
   // Rotation is checked by the room itself: admin or the room's owner key.
-  if (!admin && !rotate && roomCreation(env) === "key") return json({ error: "Invalid creator key" }, 401);
+  if (!admin && !rotate) return json({ error: "Invalid creator key" }, 401);
 
   const roomId = slugify(String(body.name ?? ""));
   if (!ROOM_ID_PATTERN.test(roomId)) return json({ error: "Room name needs letters or numbers" }, 400);
@@ -53,10 +49,6 @@ async function createRoom(req: Request, env: Env): Promise<Response> {
 export default {
   async fetch(req, env): Promise<Response> {
     const { pathname } = new URL(req.url);
-
-    if (pathname === "/api/config") {
-      return json({ roomCreation: roomCreation(env) } satisfies ServerConfig);
-    }
 
     if (pathname === "/api/rooms") {
       if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);

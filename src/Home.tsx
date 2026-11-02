@@ -1,5 +1,5 @@
-import { useEffect, useState, type FormEvent } from "react";
-import type { CreateRoomResponse, RoomCreation, ServerConfig } from "../shared/protocol";
+import { useState, type FormEvent } from "react";
+import type { CreateRoomResponse } from "../shared/protocol";
 import { inviteLink, load, remove, save } from "./storage";
 
 type SavedRoom = { roomId: string; link: string; createdAt: number; ownerKey?: string };
@@ -14,15 +14,6 @@ export function Home() {
   const [name, setName] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [mode, setMode] = useState<RoomCreation | null>(null);
-  const [showKeyForm, setShowKeyForm] = useState(false);
-
-  useEffect(() => {
-    fetch("/api/config")
-      .then((r) => r.json() as Promise<ServerConfig>)
-      .then((c) => setMode(c.roomCreation))
-      .catch(() => setMode("key"));
-  }, []);
 
   function storeRooms(next: SavedRoom[]) {
     setRooms(next);
@@ -45,6 +36,11 @@ export function Home() {
       if (res.status === 401) {
         remove(KEY_STORE);
         setCreatorKey("");
+      }
+      // The creator key can take back a room whose link was lost (cleared browser, other device).
+      if (res.status === 409 && !rotate && confirm(`"${roomName}" already exists. Rotate its link to get a new one? Anyone using the old link is disconnected.`)) {
+        setBusy(false);
+        return request(roomName, true, ownerKey);
       }
       if (!res.ok) throw new Error(body.error ?? `Request failed (${res.status})`);
 
@@ -72,7 +68,6 @@ export function Home() {
     save(KEY_STORE, key);
     setCreatorKey(key);
     setKeyDraft("");
-    setShowKeyForm(false);
   }
 
   function submitRoom(e: FormEvent) {
@@ -85,14 +80,11 @@ export function Home() {
       <h1 className="brand">stream</h1>
       <p className="muted">Rooms for watching each other's games. Join with an invite link.</p>
 
-      {mode === null ? null : mode === "key" && !creatorKey ? (
+      {!creatorKey ? (
         <KeyForm draft={keyDraft} setDraft={setKeyDraft} onSubmit={submitKey} />
       ) : (
         <form className="card" onSubmit={submitRoom}>
           <label htmlFor="name">New room</label>
-          {mode === "open" && (
-            <p className="muted small">Anyone with this site's address can make rooms here. Only people with the invite link can join one.</p>
-          )}
           <div className="row">
             <input
               id="name"
@@ -105,29 +97,17 @@ export function Home() {
               Create
             </button>
           </div>
-          {creatorKey ? (
-            <button
-              type="button"
-              className="link small"
-              onClick={() => {
-                remove(KEY_STORE);
-                setCreatorKey("");
-              }}
-            >
-              Forget creator key
-            </button>
-          ) : (
-            !showKeyForm && (
-              <button type="button" className="link small" onClick={() => setShowKeyForm(true)}>
-                I have the creator key
-              </button>
-            )
-          )}
+          <button
+            type="button"
+            className="link small"
+            onClick={() => {
+              remove(KEY_STORE);
+              setCreatorKey("");
+            }}
+          >
+            Forget creator key
+          </button>
         </form>
-      )}
-
-      {mode === "open" && !creatorKey && showKeyForm && (
-        <KeyForm draft={keyDraft} setDraft={setKeyDraft} onSubmit={submitKey} admin />
       )}
 
       {error && <p className="error">{error}</p>}
@@ -160,15 +140,12 @@ function KeyForm(props: {
   draft: string;
   setDraft: (v: string) => void;
   onSubmit: (e: FormEvent) => void;
-  admin?: boolean;
 }) {
   return (
     <form className="card" onSubmit={props.onSubmit}>
       <label htmlFor="key">Creator key</label>
       <p className="muted small">
-        {props.admin
-          ? "Lets you rotate any room's link on this server. Saved in this browser."
-          : "Only needed to make rooms. Ask whoever runs this server. Saved in this browser."}
+        Only needed to make rooms. Ask whoever runs this server. Saved in this browser.
       </p>
       <div className="row">
         <input

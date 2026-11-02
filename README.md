@@ -88,14 +88,53 @@ npm run deploy
 
 Or add it in the dashboard under your Worker's **Settings → Domains & Routes**.
 
-### Who can make rooms
+### Let friends make their own rooms
 
-Set `ROOM_CREATION` in `wrangler.jsonc`:
+Give them the creator key. Rooms are never listed anywhere: each browser keeps its own **Your rooms** list, and a room can only be joined with its invite link, so nobody sees anyone else's rooms. Anyone holding the creator key can also rotate any room's link, so share it only with people you trust. Making rooms always needs the key, so a stranger who finds your site's address can't run up your bill.
 
-- `"key"` (default): you need the creator key to make a room. Good when one person runs the server and hands out links.
-- `"open"`: anyone who knows the site's address can make their own rooms. Good for a friend group sharing one server.
+## Update
 
-Either way, joining a room always needs its invite link, and only the person who made a room (that browser) or someone with the creator key can rotate its link. Open mode means strangers who find the address could make rooms and stream on your bill, so keep the address among friends and set up the billing notification above.
+New versions land on this repository's `main` branch.
+
+**If you used Deploy to Cloudflare**, Cloudflare made a copy of this repository in your GitHub account and redeploys whenever it changes. Pull in the latest version and push it:
+
+```bash
+git clone https://github.com/<you>/<your-copy>
+cd <your-copy>
+git remote add upstream https://github.com/Andrew1431/stream-right
+git pull upstream main
+git push
+```
+
+Next time, only the last two commands are needed. The push triggers a new deploy, visible under your Worker's **Deployments** tab.
+
+**If you deployed from your computer:**
+
+```bash
+git pull
+npm install
+npm run deploy
+```
+
+Updates keep your secrets, rooms and invite links. Anyone in a room when the new version goes live reconnects on their own after a moment.
+
+## Lost or leaked keys
+
+**Creator key.** Set a new one; the old key stops working straight away. Rooms and invite links are unaffected.
+
+```bash
+npx wrangler secret put CREATOR_KEY
+```
+
+Or in the dashboard: your Worker → **Settings → Variables and Secrets** → edit `CREATOR_KEY`. Anyone who saved the old key in their browser is asked for the new one next time they make a room.
+
+**An invite link leaked.** Press **Rotate link** on the home page in the browser that made the room. Everyone is disconnected and only the new link works.
+
+**Lost an invite link** (cleared the browser, or made the room on another device). With the creator key entered, create a room with the same name and confirm the prompt to rotate it. You get a fresh link; the old one stops working.
+
+**An OBS token leaked.** In the room, open **Stream from OBS** and press **Make a new token**. To revoke every OBS token in a room at once, rotate the room's link.
+
+**Realtime App Secret leaked.** Make a new secret for the app in **Realtime → Serverless SFU**, then run `npx wrangler secret put REALTIME_APP_SECRET` (or edit it in the dashboard).
 
 ## Streaming from OBS
 
