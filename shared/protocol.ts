@@ -22,7 +22,7 @@ export type Member = {
 
 export type SessionDescription = { type: "offer" | "answer"; sdp: string };
 
-export type PullTrack = { sessionId: string; trackName: TrackName; rid?: Rid };
+export type PullTrack = { sessionId: string; trackName: TrackName; rid?: Rid; fixed?: boolean };
 
 export type SfuOp =
   | { op: "newSession" }

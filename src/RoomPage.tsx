@@ -1,17 +1,24 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
 import { MAX_NAME_LENGTH, type Member, type Rid, type Stream } from "../shared/protocol";
 import { RoomConnection, type RoomStatus } from "./connection";
-import { PRESETS, Publisher, Subscriber, type PresetId } from "./media";
+import { PRESETS, Publisher, Subscriber, type Layer, type PresetId } from "./media";
 import { load, save } from "./storage";
 
 const NAME_STORE = "displayName";
 const PRESET_STORE = "sharePreset";
+const LAYOUT_STORE = "layout";
 
-const LAYERS: { rid: Rid; label: string }[] = [
-  { rid: "f", label: "High" },
-  { rid: "h", label: "Medium" },
-  { rid: "q", label: "Low" },
+type Quality = "auto" | Rid;
+type LayoutMode = "focus" | "split";
+
+const QUALITIES: { id: Quality; label: string }[] = [
+  { id: "auto", label: "Auto" },
+  { id: "f", label: "High" },
+  { id: "h", label: "Medium" },
+  { id: "q", label: "Low" },
 ];
+
+const THUMB_LAYER: Layer = { rid: "q", fixed: false };
 
 function readToken(): string {
   return new URLSearchParams(location.hash.slice(1)).get("k") ?? "";
@@ -94,7 +101,8 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
   const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map());
   const [subscriber, setSubscriber] = useState<Subscriber | null>(null);
   const [focusId, setFocusId] = useState<string | null>(null);
-  const [focusRid, setFocusRid] = useState<Rid>("f");
+  const [quality, setQuality] = useState<Quality>("auto");
+  const [layout, setLayout] = useState<LayoutMode>(() => (load<string>(LAYOUT_STORE, "focus") === "split" ? "split" : "focus"));
 
   // SFU sessions don't survive a reconnect: drop everything and start over on each epoch.
   useEffect(() => {
@@ -117,17 +125,23 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
   const streaming = members.filter((m) => m.stream);
   const focused =
     streaming.find((m) => m.id === focusId) ?? streaming.find((m) => m.id !== you) ?? streaming[0] ?? null;
+  const split = layout === "split" && streaming.length > 1;
+  const remoteCount = streaming.filter((m) => m.id !== you).length;
 
-  // Pull every remote stream: the focused one at the chosen layer, the rest as low-res thumbnails.
+  // Big tiles get the chosen quality; Auto prefers the top layer but lets the SFU step down.
+  // In split view with 3+ streams each tile is small, so Auto starts at the medium layer.
+  const bigLayer: Layer =
+    quality === "auto" ? { rid: split && remoteCount > 2 ? "h" : "f", fixed: false } : { rid: quality, fixed: true };
+
   useEffect(() => {
     if (!subscriber) return;
-    const want = new Map<Stream, Rid>();
+    const want = new Map<Stream, Layer>();
     for (const m of streaming) {
       if (m.id === you || !m.stream) continue;
-      want.set(m.stream, m.id === focused?.id ? focusRid : "q");
+      want.set(m.stream, split || m.id === focused?.id ? bigLayer : THUMB_LAYER);
     }
     subscriber.sync(want);
-  }, [subscriber, streamingKey(streaming), focused?.id, focusRid, you]);
+  }, [subscriber, streamingKey(streaming), focused?.id, split, bigLayer.rid, bigLayer.fixed, you]);
 
   async function startShare() {
     setError("");
@@ -147,107 +161,120 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
     setLocalStream(null);
   }
 
+  function changeLayout(next: LayoutMode) {
+    setLayout(next);
+    save(LAYOUT_STORE, next);
+  }
+
   const streamFor = (m: Member) => (m.id === you ? localStream : (m.stream && remoteStreams.get(m.stream.sessionId)) ?? null);
+  const tile = (m: Member, kind: "big" | "thumb") => (
+    <VideoTile key={m.id} member={m} stream={streamFor(m)} isYou={m.id === you} big={kind === "big"} />
+  );
+
+  if (status.kind === "closed") {
+    return (
+      <main className="page">
+        <h1>{props.roomId}</h1>
+        <p className="error">{status.reason}</p>
+      </main>
+    );
+  }
 
   return (
-    <main className="page wide">
-      <div className="row spread">
-        <h1>{props.roomId}</h1>
-        <StatusBadge status={status} />
-      </div>
+    <main className="room">
+      <header className="topbar">
+        <div className="row">
+          <strong className="room-name">{props.roomId}</strong>
+          <StatusBadge status={status} />
+          <ul className="people">
+            {members.map((m) => (
+              <li key={m.id} className={m.stream ? "live" : ""} title={m.stream ? "Sharing" : undefined}>
+                {m.name}
+                {m.id === you && <span className="muted"> (you)</span>}
+              </li>
+            ))}
+          </ul>
+          <button type="button" className="link small" onClick={props.onRename}>Rename</button>
+        </div>
 
-      {status.kind === "closed" ? (
-        <p className="error">{status.reason}</p>
-      ) : (
-        <>
-          <section className="card row spread">
-            {localStream ? (
-              <>
-                <span>
-                  Sharing at <strong>{PRESETS[preset].label}</strong>
-                </span>
-                <button type="button" className="danger" onClick={stopShare}>Stop sharing</button>
-              </>
-            ) : (
-              <>
-                <select
-                  value={preset}
-                  onChange={(e) => {
-                    setPreset(e.target.value as PresetId);
-                    save(PRESET_STORE, e.target.value);
-                  }}
-                >
-                  {Object.entries(PRESETS).map(([id, p]) => (
-                    <option key={id} value={id}>{p.label}</option>
-                  ))}
-                </select>
-                <button type="button" disabled={status.kind !== "connected" || starting} onClick={startShare}>
-                  {starting ? "Starting…" : "Share screen"}
+        <div className="row">
+          {remoteCount > 0 && (
+            <div className="segmented" title="Quality of the streams you're watching">
+              {QUALITIES.map((q) => (
+                <button key={q.id} type="button" className={quality === q.id ? "active" : ""} onClick={() => setQuality(q.id)}>
+                  {q.label}
                 </button>
-              </>
-            )}
-          </section>
-
-          {error && <p className="error">{error}</p>}
-          {viewError && <p className="error">{viewError}</p>}
-
-          {focused && (
-            <section className="stage">
-              <VideoTile
-                member={focused}
-                stream={streamFor(focused)}
-                isYou={focused.id === you}
-                large
-              />
-              {focused.id !== you && (
-                <div className="row small">
-                  Quality:
-                  {LAYERS.map((l) => (
-                    <button
-                      key={l.rid}
-                      type="button"
-                      className={focusRid === l.rid ? "chip active" : "chip"}
-                      onClick={() => setFocusRid(l.rid)}
-                    >
-                      {l.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </section>
+              ))}
+            </div>
           )}
-
           {streaming.length > 1 && (
-            <section className="thumbs">
+            <div className="segmented">
+              <button type="button" className={layout === "focus" ? "active" : ""} onClick={() => changeLayout("focus")}>
+                Focus
+              </button>
+              <button type="button" className={layout === "split" ? "active" : ""} onClick={() => changeLayout("split")}>
+                Split
+              </button>
+            </div>
+          )}
+          {localStream ? (
+            <button type="button" className="danger" onClick={stopShare}>
+              Stop sharing ({PRESETS[preset].label})
+            </button>
+          ) : (
+            <>
+              <select
+                value={preset}
+                onChange={(e) => {
+                  setPreset(e.target.value as PresetId);
+                  save(PRESET_STORE, e.target.value);
+                }}
+              >
+                {Object.entries(PRESETS).map(([id, p]) => (
+                  <option key={id} value={id}>{p.label}</option>
+                ))}
+              </select>
+              <button type="button" disabled={status.kind !== "connected" || starting} onClick={startShare}>
+                {starting ? "Starting…" : "Share screen"}
+              </button>
+            </>
+          )}
+        </div>
+      </header>
+
+      {(error || viewError) && <p className="error banner">{error || viewError}</p>}
+
+      {streaming.length === 0 ? (
+        <div className="stage empty muted">Nobody is sharing yet. Click Share screen to start.</div>
+      ) : split ? (
+        <div className="stage split" style={splitGrid(streaming.length)}>
+          {streaming.map((m) => tile(m, "big"))}
+        </div>
+      ) : (
+        <div className={streaming.length > 1 ? "stage focus with-thumbs" : "stage focus"}>
+          {focused && tile(focused, "big")}
+          {streaming.length > 1 && (
+            <div className="thumbs">
               {streaming
                 .filter((m) => m.id !== focused?.id)
                 .map((m) => (
-                  <button key={m.id} type="button" className="thumb" onClick={() => setFocusId(m.id)}>
-                    <VideoTile member={m} stream={streamFor(m)} isYou={m.id === you} />
+                  <button key={m.id} type="button" className="thumb" onClick={() => setFocusId(m.id)} title="Watch this stream">
+                    {tile(m, "thumb")}
                   </button>
                 ))}
-            </section>
+            </div>
           )}
-
-          <section className="card">
-            <h2>In the room ({members.length})</h2>
-            <ul className="members">
-              {members.map((m) => (
-                <li key={m.id}>
-                  {m.name}
-                  {m.id === you && <span className="muted"> (you)</span>}
-                  {m.stream && <span className="live">LIVE</span>}
-                </li>
-              ))}
-            </ul>
-            <button type="button" className="link small" onClick={props.onRename}>
-              Change name
-            </button>
-          </section>
-        </>
+        </div>
       )}
     </main>
   );
+}
+
+// Near-square grid: 2 → 2×1, 3–4 → 2×2, 5–6 → 3×2, …
+function splitGrid(n: number): React.CSSProperties {
+  const cols = Math.ceil(Math.sqrt(n));
+  const rows = Math.ceil(n / cols);
+  return { gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))` };
 }
 
 // Stable dependency for the pull effect: changes only when the set of live streams does.
@@ -255,8 +282,9 @@ function streamingKey(members: Member[]): string {
   return members.map((m) => `${m.id}:${m.stream?.sessionId}:${m.stream?.tracks.join(",")}`).join("|");
 }
 
-function VideoTile(props: { member: Member; stream: MediaStream | null; isYou: boolean; large?: boolean }) {
+function VideoTile(props: { member: Member; stream: MediaStream | null; isYou: boolean; big?: boolean }) {
   const ref = useRef<HTMLVideoElement>(null);
+  const boxRef = useRef<HTMLDivElement>(null);
   const [muted, setMuted] = useState(true);
   const stats = useVideoStats(ref, props.stream);
 
@@ -266,8 +294,13 @@ function VideoTile(props: { member: Member; stream: MediaStream | null; isYou: b
 
   const hasAudio = !props.isYou && !!props.stream?.getAudioTracks().length;
 
+  function toggleFullscreen() {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    else boxRef.current?.requestFullscreen().catch(() => {});
+  }
+
   return (
-    <div className={props.large ? "tile large" : "tile"}>
+    <div ref={boxRef} className={props.big ? "tile big" : "tile"} onDoubleClick={props.big ? toggleFullscreen : undefined}>
       <video ref={ref} autoPlay playsInline muted={props.isYou || muted} />
       {!props.stream && <div className="tile-empty">Connecting…</div>}
       <div className="tile-label">
@@ -275,10 +308,13 @@ function VideoTile(props: { member: Member; stream: MediaStream | null; isYou: b
         {props.isYou && " (you)"}
         {stats && <span className="muted"> · {stats}</span>}
       </div>
-      {props.large && hasAudio && (
-        <button type="button" className="tile-mute" onClick={() => setMuted((m) => !m)}>
-          {muted ? "Unmute" : "Mute"}
-        </button>
+      {props.big && (
+        <div className="tile-actions">
+          {hasAudio && (
+            <button type="button" onClick={() => setMuted((m) => !m)}>{muted ? "Unmute" : "Mute"}</button>
+          )}
+          <button type="button" onClick={toggleFullscreen} title="Fullscreen (or double-click)">⛶</button>
+        </div>
       )}
     </div>
   );

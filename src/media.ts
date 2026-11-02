@@ -5,10 +5,12 @@ export const PRESETS = {
   "720p30": { label: "720p 30fps", height: 720, fps: 30, bitrate: 2_500_000 },
   "1080p60": { label: "1080p 60fps", height: 1080, fps: 60, bitrate: 6_000_000 },
   "1440p60": { label: "1440p 60fps", height: 1440, fps: 60, bitrate: 10_000_000 },
-  source: { label: "Source (no cap)", height: 0, fps: 60, bitrate: 15_000_000 },
+  "2160p60": { label: "4K 60fps", height: 2160, fps: 60, bitrate: 20_000_000 },
+  source: { label: "Source (no cap)", height: 0, fps: 60, bitrate: 20_000_000 },
 } as const;
 export type PresetId = keyof typeof PRESETS;
 
+const MAX_BITRATE = 30_000_000;
 const ICE_SERVERS: RTCIceServer[] = [{ urls: "stun:stun.cloudflare.com:3478" }];
 const ICE_GATHER_TIMEOUT_MS = 2_000;
 const CONNECT_TIMEOUT_MS = 15_000;
@@ -50,6 +52,26 @@ function waitConnected(pc: RTCPeerConnection): Promise<void> {
     };
     pc.addEventListener("connectionstatechange", check);
   });
+}
+
+// Preset bitrates assume 16:9; ultrawide captures carry more pixels at the same height.
+function scaledBitrate(preset: (typeof PRESETS)[PresetId], video: MediaStreamTrack): number {
+  const { width = 0, height = 0 } = video.getSettings();
+  if (!width || !height || !preset.height) return preset.bitrate;
+  const aspect = width / height;
+  return Math.round(Math.min(MAX_BITRATE, preset.bitrate * Math.max(1, aspect / (16 / 9))));
+}
+
+// H.264 usually has a hardware encoder (NVENC, Quick Sync, AMF), which keeps up at
+// high resolutions while a game is using the CPU. Falls back to VP8 if unsupported.
+function preferH264(transceiver: RTCRtpTransceiver) {
+  try {
+    const codecs = RTCRtpReceiver.getCapabilities("video")?.codecs ?? [];
+    const h264 = codecs.filter((c) => c.mimeType === "video/H264");
+    if (h264.length) transceiver.setCodecPreferences([...h264, ...codecs.filter((c) => c.mimeType !== "video/H264")]);
+  } catch {
+    // Keep the browser default.
+  }
 }
 
 function checkTracks(res: SfuResponse) {
@@ -96,14 +118,16 @@ export class Publisher {
       this.pc = pc;
       const tracks: { mid: string; trackName: TrackName }[] = [];
 
+      const bitrate = scaledBitrate(preset, video);
       const vt = pc.addTransceiver(video, {
         direction: "sendonly",
         sendEncodings: [
-          { rid: "f", maxBitrate: preset.bitrate, maxFramerate: preset.fps },
-          { rid: "h", scaleResolutionDownBy: 2, maxBitrate: Math.round(preset.bitrate / 4), maxFramerate: preset.fps },
-          { rid: "q", scaleResolutionDownBy: 4, maxBitrate: Math.max(200_000, Math.round(preset.bitrate / 16)), maxFramerate: 30 },
+          { rid: "f", maxBitrate: bitrate, maxFramerate: preset.fps },
+          { rid: "h", scaleResolutionDownBy: 2, maxBitrate: Math.round(bitrate / 4), maxFramerate: preset.fps },
+          { rid: "q", scaleResolutionDownBy: 4, maxBitrate: Math.max(200_000, Math.round(bitrate / 16)), maxFramerate: 30 },
         ],
       });
+      preferH264(vt);
       const at = audio ? pc.addTransceiver(audio, { direction: "sendonly" }) : null;
 
       await pc.setLocalDescription(await pc.createOffer());
@@ -143,6 +167,9 @@ export class Publisher {
 }
 
 type Pulled = { mid: string; track: PullTrack };
+
+// `fixed` pins the layer; otherwise the SFU may drop to lower layers when bandwidth is short.
+export type Layer = { rid: Rid; fixed: boolean };
 const keyOf = (t: { sessionId: string; trackName: TrackName }) => `${t.sessionId}:${t.trackName}`;
 
 // One receiving PeerConnection for every stream in the room. All SFU mutations
@@ -165,7 +192,7 @@ export class Subscriber {
   }
 
   // Bring pulled tracks in line with `want` (publisher stream → preferred video layer).
-  sync(want: Map<Stream, Rid>) {
+  sync(want: Map<Stream, Layer>) {
     this.queue = this.queue
       .then(() => this.apply(want))
       .then(() => this.onError(null))
@@ -210,13 +237,13 @@ export class Subscriber {
     });
   }
 
-  private async apply(want: Map<Stream, Rid>) {
+  private async apply(want: Map<Stream, Layer>) {
     if (this.closed) return;
 
     const desired = new Map<string, PullTrack>();
-    for (const [stream, rid] of want) {
+    for (const [stream, layer] of want) {
       for (const trackName of stream.tracks) {
-        const t: PullTrack = { sessionId: stream.sessionId, trackName, ...(trackName === "video" ? { rid } : {}) };
+        const t: PullTrack = { sessionId: stream.sessionId, trackName, ...(trackName === "video" ? layer : {}) };
         desired.set(keyOf(t), t);
       }
     }
@@ -229,7 +256,7 @@ export class Subscriber {
 
     for (const [k, t] of desired) {
       const p = this.pulled.get(k);
-      if (p && t.rid && p.track.rid !== t.rid) {
+      if (p && t.rid && (p.track.rid !== t.rid || !!p.track.fixed !== !!t.fixed)) {
         await this.conn.request({ op: "setLayer", sessionId: this.sessionId!, mid: p.mid, track: { ...t, rid: t.rid } });
         p.track = t;
       }

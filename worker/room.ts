@@ -21,7 +21,7 @@ const MAX_MESSAGE_BYTES = 128 * 1024;
 const MAX_SESSIONS_PER_MEMBER = 8;
 const MAX_PULL_TRACKS = 32;
 const TRACK_NAMES: readonly TrackName[] = ["video", "audio"];
-const PRESETS = ["720p30", "1080p60", "1440p60", "source"];
+const PRESETS = ["720p30", "1080p60", "1440p60", "2160p60", "source"];
 
 type Authed = { authed: true; clientId: string; sessions: string[] } & Member;
 type Attachment = { authed: false; connectedAt: number } | Authed;
@@ -230,7 +230,9 @@ export class Room extends DurableObject<Env> {
     const base = { location: "remote", sessionId: t.sessionId, trackName: t.trackName };
     if (t.trackName !== "video") return base;
     const rid = RIDS.includes(t.rid as never) ? t.rid : "f";
-    return { ...base, simulcast: { preferredRid: rid, priorityOrdering: "asciibetical", ridNotAvailable: "asciibetical" } };
+    // Fixed: hold the chosen layer even when bandwidth is short. Auto: let the SFU step down.
+    const priorityOrdering = t.fixed === true ? "none" : "asciibetical";
+    return { ...base, simulcast: { preferredRid: rid, priorityOrdering, ridNotAvailable: "asciibetical" } };
   }
 
   async webSocketClose(ws: WebSocket, code: number): Promise<void> {

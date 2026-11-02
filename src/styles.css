@@ -75,15 +75,19 @@ label {
   justify-content: space-between;
 }
 
-input {
-  flex: 1;
-  min-width: 0;
+input,
+select {
   padding: 8px 10px;
   border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--text);
   font: inherit;
+}
+
+input {
+  flex: 1;
+  min-width: 0;
 }
 
 button,
@@ -103,12 +107,19 @@ button:disabled {
   cursor: default;
 }
 
+button.danger {
+  background: var(--err);
+}
+
 button.link {
   background: none;
   padding: 4px 0;
-  margin-top: 8px;
   color: var(--muted);
   text-decoration: underline;
+}
+
+.card button.link {
+  margin-top: 8px;
 }
 
 .rooms,
@@ -123,60 +134,177 @@ button.link {
   border-bottom: 1px solid var(--border);
 }
 
-.page.wide {
-  max-width: 1280px;
+.badge {
+  font-size: 0.75rem;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  white-space: nowrap;
 }
 
-select {
-  padding: 8px 10px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--text);
-  font: inherit;
+.badge.connected {
+  color: var(--ok);
 }
 
-button.danger {
-  background: var(--err);
+.badge.connecting,
+.badge.reconnecting {
+  color: var(--warn);
 }
 
-button.chip {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  padding: 4px 10px;
-}
-
-button.chip.active {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.live {
-  margin-left: 8px;
-  font-size: 0.7rem;
-  font-weight: 700;
+.badge.closed {
   color: var(--err);
 }
 
+/* Room: a top bar and a stage that fills the rest of the window. */
+
+.room {
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.room-name {
+  font-size: 1.1rem;
+}
+
+.people {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.people li {
+  font-size: 0.85rem;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+
+.people li.live {
+  border-color: var(--err);
+}
+
+.people li.live::before {
+  content: "● ";
+  color: var(--err);
+}
+
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.segmented button {
+  background: var(--bg);
+  color: var(--muted);
+  border-radius: 0;
+  padding: 6px 12px;
+}
+
+.segmented button + button {
+  border-left: 1px solid var(--border);
+}
+
+.segmented button.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.banner {
+  margin: 0;
+  padding: 8px 16px;
+  background: rgb(255 107 107 / 0.1);
+}
+
 .stage {
-  margin: 16px 0;
-  display: grid;
+  flex: 1;
+  min-height: 0;
+  padding: 8px;
   gap: 8px;
+}
+
+.stage.empty {
+  display: grid;
+  place-items: center;
+}
+
+.stage.focus {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.stage.focus.with-thumbs {
+  grid-template-columns: minmax(0, 1fr) 240px;
+}
+
+.stage.split {
+  display: grid;
+}
+
+.thumbs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+}
+
+@media (max-width: 800px) {
+  .stage.focus.with-thumbs {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+
+  .thumbs {
+    flex-direction: row;
+    overflow-x: auto;
+  }
+
+  .thumbs .thumb {
+    width: 200px;
+    flex: none;
+  }
 }
 
 .tile {
   position: relative;
   background: #000;
-  border-radius: 10px;
+  border-radius: 8px;
   overflow: hidden;
+  min-width: 0;
+  min-height: 0;
+}
+
+.tile:not(.big) {
   aspect-ratio: 16 / 9;
 }
 
 .tile video {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   object-fit: contain;
-  display: block;
+}
+
+.tile:fullscreen {
+  border-radius: 0;
 }
 
 .tile-empty {
@@ -197,42 +325,32 @@ button.chip.active {
   font-size: 0.85rem;
 }
 
-.tile-mute {
+.tile-actions {
   position: absolute;
   right: 8px;
   bottom: 8px;
-  padding: 4px 10px;
-  background: rgb(0 0 0 / 0.6);
+  display: flex;
+  gap: 6px;
+  opacity: 0.4;
+  transition: opacity 0.15s;
 }
 
-.thumbs {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 8px;
+.tile:hover .tile-actions {
+  opacity: 1;
+}
+
+.tile-actions button {
+  padding: 4px 10px;
+  background: rgb(0 0 0 / 0.6);
 }
 
 button.thumb {
   padding: 0;
   background: none;
-  border-radius: 10px;
+  border-radius: 8px;
+  outline-offset: 2px;
 }
 
-.badge {
-  font-size: 0.8rem;
-  padding: 4px 10px;
-  border-radius: 999px;
-  border: 1px solid currentColor;
-}
-
-.badge.connected {
-  color: var(--ok);
-}
-
-.badge.connecting,
-.badge.reconnecting {
-  color: var(--warn);
-}
-
-.badge.closed {
-  color: var(--err);
+button.thumb:hover {
+  outline: 2px solid var(--accent);
 }
