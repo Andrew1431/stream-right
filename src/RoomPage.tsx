@@ -13,6 +13,7 @@ import {
   type PresetId,
   type ShareSettings,
 } from "./media";
+import { ObsPanel } from "./ObsPanel";
 import { load, save } from "./storage";
 
 const NAME_STORE = "displayName";
@@ -118,6 +119,7 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
   const [subscriber, setSubscriber] = useState<Subscriber | null>(null);
   const [focusId, setFocusId] = useState<string | null>(null);
   const [quality, setQuality] = useState<Quality>("auto");
+  const [showObs, setShowObs] = useState(false);
   const [layout, setLayout] = useState<LayoutMode>(() => (load<string>(LAYOUT_STORE, "focus") === "split" ? "split" : "focus"));
 
   // SFU sessions don't survive a reconnect: drop everything and start over on each epoch.
@@ -289,8 +291,15 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
               </button>
             </>
           )}
+          <button type="button" className={showObs ? "chip active" : "chip"} onClick={() => setShowObs((s) => !s)}>
+            Stream from OBS
+          </button>
         </div>
       </header>
+
+      {showObs && (
+        <ObsPanel conn={conn} roomId={props.roomId} connected={status.kind === "connected"} onClose={() => setShowObs(false)} />
+      )}
 
       {(error || viewError) && <p className="error banner">{error || viewError}</p>}
 

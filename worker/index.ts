@@ -52,6 +52,12 @@ export default {
       return env.ROOMS.getByName(ws[1]).fetch(req);
     }
 
+    const whip = pathname.match(/^\/api\/rooms\/([^/]+)\/whip(?:\/[^/]+)?$/);
+    if (whip) {
+      if (!ROOM_ID_PATTERN.test(whip[1])) return json({ error: "Not found" }, 404);
+      return env.ROOMS.getByName(whip[1]).fetch(req);
+    }
+
     return json({ error: "Not found" }, 404);
   },
 } satisfies ExportedHandler<Env>;

@@ -364,3 +364,61 @@ button.thumb:hover {
   box-shadow: 0 4px 16px rgb(0 0 0 / 0.5);
   border-radius: 8px;
 }
+
+.obs-panel {
+  margin: 8px 16px;
+  max-height: 60dvh;
+  overflow-y: auto;
+}
+
+.obs-panel h3 {
+  margin: 16px 0 8px;
+  font-size: 0.9rem;
+}
+
+.obs-fields {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px 12px;
+  align-items: center;
+  margin: 0;
+}
+
+.obs-fields dt {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.obs-fields dd {
+  margin: 0;
+}
+
+.obs-fields code {
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+
+.grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.obs-list {
+  margin: 0;
+  padding-left: 20px;
+  line-height: 1.6;
+}
+
+button.chip {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+}
+
+button.chip.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}

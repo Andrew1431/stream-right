@@ -9,9 +9,11 @@ import {
   type ServerMessage,
   type SfuOp,
   type SfuResponse,
+  type Stream,
   type TrackName,
 } from "../shared/protocol";
 import { randomToken, safeEqual, sha256Hex } from "./crypto";
+import { parseOfferTracks } from "./sdp";
 import { sfu, SfuError } from "./sfu";
 
 const HELLO_TIMEOUT_MS = 5_000;
@@ -23,9 +25,25 @@ const MAX_PULL_TRACKS = 32;
 const TRACK_NAMES: readonly TrackName[] = ["video", "audio"];
 // Display-only label from the sharer, e.g. "1080p100" or "source60".
 const PRESET_PATTERN = /^(?:\d{3,4}p|source)\d{2,3}$/;
+const BROWSER_RIDS = [...RIDS];
+
+// OBS can vanish without sending DELETE (crash, network loss), so poll the SFU.
+const OBS_HEALTH_INTERVAL_MS = 30_000;
+const OBS_STARTUP_GRACE_MS = 20_000;
+const OBS_KEY_PREFIX = "obskey:";
 
 type Authed = { authed: true; clientId: string; sessions: string[] } & Member;
 type Attachment = { authed: false; connectedAt: number } | Authed;
+
+type ObsStream = {
+  resourceId: string;
+  keyHash: string;
+  name: string;
+  sessionId: string;
+  tracks: TrackName[];
+  rids: string[];
+  startedAt: number;
+};
 
 class BadRequest extends Error {}
 
@@ -40,7 +58,27 @@ const isTrackName = (v: unknown): v is TrackName => TRACK_NAMES.includes(v as Tr
 
 const toMember = ({ id, name, joinedAt, stream }: Authed): Member => ({ id, name, joinedAt, stream });
 
+const obsMember = (s: ObsStream): Member => ({
+  id: `obs-${s.resourceId}`,
+  name: `${s.name} (OBS)`,
+  joinedAt: s.startedAt,
+  stream: { sessionId: s.sessionId, tracks: s.tracks, preset: "obs", rids: s.rids },
+  obs: true,
+});
+
+const text = (body: string, status: number, headers: Record<string, string> = {}) =>
+  new Response(body, { status, headers: { "Content-Type": "text/plain", ...headers } });
+
 export class Room extends DurableObject<Env> {
+  private obs = new Map<string, ObsStream>();
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    ctx.blockConcurrencyWhile(async () => {
+      for (const s of (await ctx.storage.get<ObsStream[]>("obsStreams")) ?? []) this.obs.set(s.resourceId, s);
+    });
+  }
+
   // Returns the new invite token, or null when the room exists and rotate is false.
   async issueToken(rotate: boolean): Promise<string | null> {
     const existing = await this.ctx.storage.get<string>("tokenHash");
@@ -50,19 +88,114 @@ export class Room extends DurableObject<Env> {
     await this.ctx.storage.put("tokenHash", await sha256Hex(token));
     if (existing) {
       for (const ws of this.ctx.getWebSockets()) ws.close(CloseCode.TokenRotated, "Invite link was rotated");
+      // OBS keys were handed out to holders of the old link; revoke them too.
+      const keys = await this.ctx.storage.list({ prefix: OBS_KEY_PREFIX });
+      await this.ctx.storage.delete([...keys.keys()]);
+      for (const s of [...this.obs.values()]) await this.endObs(s);
     }
     return token;
   }
 
-  async fetch(): Promise<Response> {
+  async fetch(req: Request): Promise<Response> {
+    const { pathname } = new URL(req.url);
+    if (pathname.endsWith("/ws")) return this.acceptSocket();
+    return this.whip(req, pathname);
+  }
+
+  private async acceptSocket(): Promise<Response> {
     const { 0: client, 1: server } = new WebSocketPair();
     this.ctx.acceptWebSocket(server);
     server.serializeAttachment({ authed: false, connectedAt: Date.now() } satisfies Attachment);
-
-    if ((await this.ctx.storage.getAlarm()) === null) {
-      await this.ctx.storage.setAlarm(Date.now() + HELLO_TIMEOUT_MS);
-    }
+    await this.scheduleAlarm(HELLO_TIMEOUT_MS);
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  // WHIP (RFC 9725): POST an SDP offer to start, DELETE the returned Location to stop.
+  private async whip(req: Request, pathname: string): Promise<Response> {
+    const match = pathname.match(/\/whip(?:\/([0-9a-f-]{36}))?$/);
+    if (!match) return text("Not found", 404);
+    const resourceId = match[1];
+
+    const key = req.headers.get("Authorization")?.replace(/^Bearer\s+/i, "") ?? "";
+    const keyHash = await sha256Hex(key);
+    const owner = key ? await this.ctx.storage.get<{ name: string }>(OBS_KEY_PREFIX + keyHash) : undefined;
+    if (!owner) return text("Invalid stream key. Get a new one from the room's Stream from OBS panel.", 401);
+
+    if (req.method === "POST" && !resourceId) {
+      if (!(req.headers.get("Content-Type") ?? "").includes("application/sdp")) return text("Expected application/sdp", 415);
+      const offer = await req.text();
+      if (!offer || offer.length > MAX_MESSAGE_BYTES) return text("Bad offer", 400);
+      return this.startObs(offer, keyHash, owner.name, pathname);
+    }
+
+    const stream = resourceId ? this.obs.get(resourceId) : undefined;
+    if (!stream || stream.keyHash !== keyHash) return text("Not found", 404);
+
+    if (req.method === "DELETE") {
+      await this.endObs(stream);
+      return new Response(null, { status: 200 });
+    }
+    // No trickle ICE: the SFU answer already carries its candidates.
+    return text("Method not allowed", 405, { Allow: "POST, DELETE" });
+  }
+
+  private async startObs(offer: string, keyHash: string, name: string, whipPath: string): Promise<Response> {
+    const tracks = parseOfferTracks(offer);
+    if (!tracks.some((t) => t.trackName === "video")) return text("Offer has no video", 400);
+
+    let answer: string;
+    let published: TrackName[];
+    let sessionId: string;
+    try {
+      const session = await sfu(this.env, "POST", "/sessions/new");
+      sessionId = session.sessionId!;
+      const res = await sfu(this.env, "POST", `/sessions/${sessionId}/tracks/new`, {
+        sessionDescription: { type: "offer", sdp: offer },
+        tracks: tracks.map((t) => ({ location: "local", mid: t.mid, trackName: t.trackName })),
+      });
+      published = (res.tracks ?? []).filter((t) => !t.errorCode && isTrackName(t.trackName)).map((t) => t.trackName as TrackName);
+      if (!published.includes("video") || !res.sessionDescription) throw new SfuError("SFU rejected the video track");
+      answer = res.sessionDescription.sdp;
+    } catch (e) {
+      console.error("whip publish failed", e);
+      return text(e instanceof SfuError ? e.message : "Server error", 502);
+    }
+
+    // Restarting the stream in OBS replaces the previous one from the same key.
+    for (const s of [...this.obs.values()]) if (s.keyHash === keyHash) await this.endObs(s);
+
+    const stream: ObsStream = {
+      resourceId: crypto.randomUUID(),
+      keyHash,
+      name,
+      sessionId,
+      tracks: published,
+      rids: tracks.find((t) => t.trackName === "video")!.rids,
+      startedAt: Date.now(),
+    };
+    this.obs.set(stream.resourceId, stream);
+    await this.saveObs();
+    await this.scheduleAlarm(OBS_HEALTH_INTERVAL_MS);
+    this.broadcast({ type: "join", member: obsMember(stream) });
+
+    return new Response(answer, {
+      status: 201,
+      headers: {
+        "Content-Type": "application/sdp",
+        Location: `${whipPath}/${stream.resourceId}`,
+        Link: '<stun:stun.cloudflare.com:3478>; rel="ice-server"',
+      },
+    });
+  }
+
+  private async endObs(stream: ObsStream): Promise<void> {
+    if (!this.obs.delete(stream.resourceId)) return;
+    await this.saveObs();
+    this.broadcast({ type: "leave", id: obsMember(stream).id });
+  }
+
+  private saveObs() {
+    return this.ctx.storage.put("obsStreams", [...this.obs.values()]);
   }
 
   async webSocketMessage(ws: WebSocket, data: string | ArrayBuffer): Promise<void> {
@@ -161,9 +294,8 @@ export class Room extends DurableObject<Env> {
           .filter((t) => !t.errorCode && isTrackName(t.trackName))
           .map((t) => t.trackName as TrackName);
         if (published.includes("video")) {
-          const updated = this.patch(ws, {
-            stream: { sessionId, tracks: published, preset: PRESET_PATTERN.test(String(op.preset)) ? op.preset : "custom" },
-          });
+          const preset = PRESET_PATTERN.test(String(op.preset)) ? op.preset : "custom";
+          const updated = this.patch(ws, { stream: { sessionId, tracks: published, preset, rids: BROWSER_RIDS } });
           this.broadcast({ type: "update", member: toMember(updated) });
         }
         return res;
@@ -215,6 +347,12 @@ export class Room extends DurableObject<Env> {
         });
       }
 
+      case "obsKey": {
+        const key = randomToken();
+        await this.ctx.storage.put(OBS_KEY_PREFIX + (await sha256Hex(key)), { name: me.name, createdAt: Date.now() });
+        return { obsKey: key };
+      }
+
       default:
         throw new BadRequest("Unknown op");
     }
@@ -223,14 +361,14 @@ export class Room extends DurableObject<Env> {
   // Only tracks currently published by someone in this room can be pulled.
   private remoteTrack(t: PullTrack) {
     if (!isStr(t?.sessionId) || !isTrackName(t.trackName)) throw new BadRequest("Bad track");
-    const published = this.members().some(
+    const stream = this.members().find(
       (m) => m.stream?.sessionId === t.sessionId && m.stream.tracks.includes(t.trackName),
-    );
-    if (!published) throw new BadRequest("That stream isn't live");
+    )?.stream;
+    if (!stream) throw new BadRequest("That stream isn't live");
 
     const base = { location: "remote", sessionId: t.sessionId, trackName: t.trackName };
-    if (t.trackName !== "video") return base;
-    const rid = RIDS.includes(t.rid as never) ? t.rid : "f";
+    const rid = publisherRid(stream, t.rid);
+    if (t.trackName !== "video" || !rid) return base;
     // Fixed: hold the chosen layer even when bandwidth is short. Auto: let the SFU step down.
     const priorityOrdering = t.fixed === true ? "none" : "asciibetical";
     return { ...base, simulcast: { preferredRid: rid, priorityOrdering, ridNotAvailable: "asciibetical" } };
@@ -249,16 +387,41 @@ export class Room extends DurableObject<Env> {
     this.leave(ws);
   }
 
+  // One alarm serves both jobs: closing sockets that never said hello, and checking OBS streams.
   async alarm(): Promise<void> {
     const cutoff = Date.now() - HELLO_TIMEOUT_MS;
-    let pending = false;
+    let pendingHello = false;
     for (const ws of this.ctx.getWebSockets()) {
       const att = ws.deserializeAttachment() as Attachment;
       if (att.authed) continue;
       if (att.connectedAt <= cutoff) ws.close(CloseCode.HelloTimeout, "Hello timeout");
-      else pending = true;
+      else pendingHello = true;
     }
-    if (pending) await this.ctx.storage.setAlarm(Date.now() + HELLO_TIMEOUT_MS);
+
+    for (const s of [...this.obs.values()]) {
+      if (Date.now() - s.startedAt < OBS_STARTUP_GRACE_MS) continue;
+      if (!(await this.obsAlive(s))) await this.endObs(s);
+    }
+
+    if (pendingHello) await this.scheduleAlarm(HELLO_TIMEOUT_MS);
+    else if (this.obs.size) await this.scheduleAlarm(OBS_HEALTH_INTERVAL_MS);
+  }
+
+  private async obsAlive(s: ObsStream): Promise<boolean> {
+    try {
+      const res = await sfu(this.env, "GET", `/sessions/${s.sessionId}`);
+      return (res.tracks ?? []).some((t) => t.status === "active");
+    } catch (e) {
+      // Only drop the stream when the SFU answered; a network blip shouldn't end it.
+      return !(e instanceof SfuError);
+    }
+  }
+
+  // Moves the alarm earlier if needed, never later.
+  private async scheduleAlarm(inMs: number): Promise<void> {
+    const at = Date.now() + inMs;
+    const current = await this.ctx.storage.getAlarm();
+    if (current === null || current > at) await this.ctx.storage.setAlarm(at);
   }
 
   private patch(ws: WebSocket, changes: Partial<Authed>): Authed {
@@ -275,7 +438,7 @@ export class Room extends DurableObject<Env> {
   }
 
   private members(): Member[] {
-    const out: Member[] = [];
+    const out: Member[] = [...this.obs.values()].map(obsMember);
     for (const ws of this.ctx.getWebSockets()) {
       const att = ws.deserializeAttachment() as Attachment;
       if (att.authed) out.push(toMember(att));
@@ -297,4 +460,13 @@ export class Room extends DurableObject<Env> {
       if ((ws.deserializeAttachment() as Attachment).authed) this.send(ws, msg);
     }
   }
+}
+
+// Map the viewer's logical layer (f/h/q) onto the publisher's own RIDs, best first.
+// Returns undefined for single-layer publishers, which must be pulled without simulcast.
+function publisherRid(stream: Stream, logical: PullTrack["rid"]): string | undefined {
+  const rids = stream.rids ?? BROWSER_RIDS;
+  if (!rids.length) return undefined;
+  const index = Math.max(0, RIDS.indexOf(logical ?? "f"));
+  return rids[Math.min(index, rids.length - 1)];
 }

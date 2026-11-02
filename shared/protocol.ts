@@ -11,6 +11,8 @@ export type Stream = {
   sessionId: string;
   tracks: TrackName[];
   preset: string;
+  // Publisher's simulcast RIDs, best first. Missing or empty means a single layer.
+  rids?: string[];
 };
 
 export type Member = {
@@ -18,6 +20,8 @@ export type Member = {
   name: string;
   joinedAt: number;
   stream: Stream | null;
+  // Streams pushed from OBS over WHIP appear as their own member.
+  obs?: boolean;
 };
 
 export type SessionDescription = { type: "offer" | "answer"; sdp: string };
@@ -31,7 +35,8 @@ export type SfuOp =
   | { op: "pull"; sessionId: string; tracks: PullTrack[] }
   | { op: "renegotiate"; sessionId: string; sdp: string }
   | { op: "setLayer"; sessionId: string; mid: string; track: PullTrack & { rid: Rid } }
-  | { op: "close"; sessionId: string; mids: string[]; sdp?: string };
+  | { op: "close"; sessionId: string; mids: string[]; sdp?: string }
+  | { op: "obsKey" };
 
 export type ClientMessage =
   | { type: "hello"; token: string; name: string; clientId: string }
@@ -44,6 +49,7 @@ export type SfuTrackResult = {
   sessionId?: string;
   errorCode?: string;
   errorDescription?: string;
+  status?: "active" | "inactive" | "initializing";
 };
 
 export type SfuResponse = {
@@ -53,6 +59,8 @@ export type SfuResponse = {
   tracks?: SfuTrackResult[];
   errorCode?: string;
   errorDescription?: string;
+  // Reply to the obsKey op.
+  obsKey?: string;
 };
 
 export type ServerMessage =
