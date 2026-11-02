@@ -6,6 +6,7 @@ import {
   type ClientMessage,
   type Member,
   type PullTrack,
+  type RoomPeek,
   type ServerMessage,
   type SfuOp,
   type SfuResponse,
@@ -117,6 +118,13 @@ export class Room extends DurableObject<Env> {
       for (const s of [...this.obs.values()]) await this.endObs(s);
     }
     return { ok: true, token, ownerKey };
+  }
+
+  async peek(token: string): Promise<RoomPeek> {
+    const tokenHash = await this.ctx.storage.get<string>("tokenHash");
+    if (!tokenHash || !(await safeEqual(await sha256Hex(token), tokenHash))) return { ok: false };
+    const members = this.members();
+    return { ok: true, people: members.length, live: members.filter((m) => m.stream).length };
   }
 
   async fetch(req: Request): Promise<Response> {

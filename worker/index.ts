@@ -2,6 +2,7 @@ import {
   ROOM_ID_PATTERN,
   type CreateRoomRequest,
   type CreateRoomResponse,
+  type RoomPeek,
 } from "../shared/protocol";
 import { safeEqual } from "./crypto";
 import { getUsage } from "./usage";
@@ -63,6 +64,14 @@ export default {
     if (pathname === "/api/rooms") {
       if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
       return createRoom(req, env);
+    }
+
+    const peek = pathname.match(/^\/api\/rooms\/([^/]+)\/peek$/);
+    if (peek) {
+      if (req.method !== "POST" || !ROOM_ID_PATTERN.test(peek[1])) return json({ error: "Not found" }, 404);
+      const body = (await req.json().catch(() => ({}))) as { token?: unknown };
+      if (typeof body.token !== "string" || !body.token) return json({ ok: false } satisfies RoomPeek);
+      return json(await env.ROOMS.getByName(peek[1]).peek(body.token.slice(0, 128)));
     }
 
     const ws = pathname.match(/^\/api\/rooms\/([^/]+)\/ws$/);

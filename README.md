@@ -156,6 +156,22 @@ Or in the dashboard: your Worker → **Settings → Variables and Secrets** → 
 
 **Realtime App Secret leaked.** Make a new secret for the app in **Realtime → Serverless SFU**, then run `npx wrangler secret put REALTIME_APP_SECRET` (or edit it in the dashboard).
 
+## Install it as an app
+
+The site installs like an app, with its own window and icon and no address bar:
+
+- **Chrome or Edge on a computer:** the install icon at the right of the address bar.
+- **Android:** the browser menu → **Install app** (or **Add to Home screen**).
+- **iPhone and iPad:** Safari's Share button → **Add to Home Screen**.
+
+The app opens on your rooms: the ones you made, and every room you've joined, each showing who's there and who's streaming. Links that were rotated say so. Paste an invite link under **Join a room** to add a new one, and press **stream** at the top left of a room to get back.
+
+Clicking an invite link (in Discord, say) opens:
+
+- **Android:** in the installed app.
+- **Chrome or Edge on a computer:** in the browser, unless you turn on **Open supported links** in the app's settings (the app's menu → **App info** or **Settings**). Either way, the room is added to the app's list once you've joined it in that browser.
+- **iPhone and iPad:** in Safari. The home-screen app keeps its own storage, so paste the link into it once and it remembers the room.
+
 ## Streaming from OBS
 
 Browser sharing works anywhere, but Chrome throttles capture when the game has focus and can't use your GPU encoder as well as OBS can. OBS 30 or newer streams straight into a room over WHIP.
@@ -195,6 +211,8 @@ npm run dev                       # http://localhost:5173
 ```
 
 Run `npm run cf-typegen` after changing `wrangler.jsonc` or `.dev.vars`.
+
+The app icon is rendered in Blender (Cycles): `blender -b -P scripts/icon/render.py -- <out_dir>`, then `node scripts/icon/resize.mjs <out_dir>` writes the sizes into `public/icons` (needs `npm i --no-save sharp`).
 
 How it fits together: a Worker serves the React app and an API, each room is a Durable Object holding the members list and a WebSocket per person, and Cloudflare Realtime relays the media. Browsers publish to and pull from the SFU directly; the room only brokers which tracks exist. OBS talks to the room's WHIP endpoint, which creates the SFU session on its behalf.
 

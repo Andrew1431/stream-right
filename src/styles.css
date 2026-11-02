@@ -272,6 +272,37 @@ button.link:hover:not(:disabled) {
   margin: 10px 0;
 }
 
+.rooms .card.expired strong {
+  color: var(--pewter);
+}
+
+.room-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.room-status.live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--platinum-lo);
+}
+
+.room-status.live::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--tally);
+  box-shadow: 0 0 6px var(--tally);
+}
+
+.key-toggle {
+  margin: 4px 0 16px;
+}
+
 a.link {
   color: var(--pewter);
   text-decoration: underline;
@@ -420,6 +451,20 @@ a.link:hover {
 
 .room-name {
   font-size: 1.2rem;
+}
+
+.home-link {
+  padding-right: 12px;
+  border-right: 1px solid var(--seam);
+  box-shadow: 1px 0 0 var(--edge);
+  font-weight: 800;
+  font-size: 1.05rem;
+  font-variation-settings: "wdth" 125;
+  text-decoration: none;
+  background: var(--heat);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }
 
 .people {
