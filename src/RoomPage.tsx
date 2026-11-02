@@ -237,6 +237,11 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
   // size recaptures your screen in a feedback loop, and pulling your own OBS stream costs bandwidth.
   // OBS streams match by token fingerprint, or by name when this browser no longer has the
   // token (incognito, cleared storage, another device): "<your name> (OBS)".
+  // Keep the OBS stream under your current name, even if its token came from another browser.
+  useEffect(() => {
+    if (status.kind === "connected" && obsKey) conn.request({ op: "claimObs", obsKey }).catch(() => {});
+  }, [conn, status.kind, epoch, obsKey]);
+
   const isMine = (m: Member) =>
     m.id === you ||
     (!!m.obs && ((!!myObsKeyId && m.obsKeyId === myObsKeyId) || m.name === `${props.name} (OBS)`));

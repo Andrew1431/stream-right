@@ -55,7 +55,9 @@ type ObsStream = {
   noClips?: boolean;
 };
 
-type ObsKeyRecord = { name: string; createdAt: number; noClips?: boolean };
+// clientId is the browser that made the token, so renaming there renames the OBS stream too.
+type ObsKeyRecord = { name: string; createdAt: number; noClips?: boolean; clientId?: string };
+const LAST_NAME_PREFIX = "lastname:";
 
 class BadRequest extends Error {}
 
@@ -301,11 +303,17 @@ export class Room extends DurableObject<Env> {
       }
     }
 
+    const name = cleanName(msg.name);
+    const lastName = await this.ctx.storage.get<string>(LAST_NAME_PREFIX + clientId);
+    if (lastName !== name) await this.ctx.storage.put(LAST_NAME_PREFIX + clientId, name);
+    // Tokens made before clientId was recorded fall back to matching this browser's previous name.
+    await this.renameObs(name, clientId, (r) => r.clientId === clientId || (!r.clientId && !!lastName && r.name === lastName));
+
     const member: Authed = {
       authed: true,
       clientId,
       id: crypto.randomUUID(),
-      name: cleanName(msg.name),
+      name,
       joinedAt: Date.now(),
       stream: null,
       sessions: [],
@@ -420,6 +428,7 @@ export class Room extends DurableObject<Env> {
           name: me.name,
           createdAt: Date.now(),
           noClips: op.noClips === true,
+          clientId: me.clientId,
         } satisfies ObsKeyRecord);
         return { obsKey: key };
       }
@@ -468,6 +477,14 @@ export class Room extends DurableObject<Env> {
         return {};
       }
 
+      // Proves ownership of an OBS token (from another browser, say) and puts this name on it.
+      case "claimObs": {
+        if (!isStr(op.obsKey)) throw new BadRequest("Bad request");
+        const keyHash = await sha256Hex(op.obsKey);
+        await this.renameObs(me.name, me.clientId, (_, hash) => hash === keyHash);
+        return {};
+      }
+
       case "clipPrefs": {
         const noClips = op.noClips === true;
         if (me.stream && !!me.stream.noClips !== noClips) {
@@ -492,6 +509,25 @@ export class Room extends DurableObject<Env> {
       default:
         throw new BadRequest("Unknown op");
     }
+  }
+
+  private async renameObs(name: string, clientId: string, matches: (r: ObsKeyRecord, keyHash: string) => boolean) {
+    const records = await this.ctx.storage.list<ObsKeyRecord>({ prefix: OBS_KEY_PREFIX });
+    const renamed: ObsStream[] = [];
+    for (const [key, record] of records) {
+      const keyHash = key.slice(OBS_KEY_PREFIX.length);
+      if (!matches(record, keyHash) || (record.name === name && record.clientId === clientId)) continue;
+      await this.ctx.storage.put(key, { ...record, name, clientId });
+      for (const s of this.obs.values()) {
+        if (s.keyHash === keyHash && s.name !== name) {
+          s.name = name;
+          renamed.push(s);
+        }
+      }
+    }
+    if (!renamed.length) return;
+    await this.saveObs();
+    for (const s of renamed) this.broadcast({ type: "update", member: obsMember(s) });
   }
 
   // Same proof as link rotation: the server's creator key, or the owner key handed out at creation.

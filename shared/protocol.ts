@@ -65,7 +65,9 @@ export type SfuOp =
   // Announces a saved clip; `of` is the member ids whose streams were clipped.
   | { op: "clip"; seconds: number; of: string[] }
   // Streamer's opt-out, for their browser share and, with its key, their OBS stream.
-  | { op: "clipPrefs"; noClips: boolean; obsKey?: string };
+  | { op: "clipPrefs"; noClips: boolean; obsKey?: string }
+  // Puts your current name on the OBS stream made with this token.
+  | { op: "claimObs"; obsKey: string };
 
 export type ClientMessage =
   | { type: "hello"; token: string; name: string; clientId: string }
