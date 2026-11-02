@@ -152,7 +152,7 @@ Or in the dashboard: your Worker → **Settings → Variables and Secrets** → 
 
 **Lost an invite link** (cleared the browser, or made the room on another device). With the creator key entered, create a room with the same name and confirm the prompt to rotate it. You get a fresh link; the old one stops working.
 
-**An OBS token leaked.** In the room, open **Stream from OBS** and press **Make a new token**. To revoke every OBS token in a room at once, rotate the room's link.
+**An OBS token leaked.** In the room, open **Stream from OBS** and press **Make a new token**. The old token stops working straight away, and a stream using it leaves the room. To revoke every OBS token in a room at once, rotate the room's link.
 
 **Realtime App Secret leaked.** Make a new secret for the app in **Realtime → Serverless SFU**, then run `npx wrangler secret put REALTIME_APP_SECRET` (or edit it in the dashboard).
 

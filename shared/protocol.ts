@@ -57,7 +57,7 @@ export type SfuOp =
   | { op: "renegotiate"; sessionId: string; sdp: string }
   | { op: "setLayer"; sessionId: string; mid: string; track: PullTrack & { rid: Rid } }
   | { op: "close"; sessionId: string; mids: string[]; sdp?: string }
-  | { op: "obsKey"; noClips?: boolean }
+  | { op: "obsKey"; noClips?: boolean; replaces?: string }
   // Room ops share the request/reply channel so the client hears about rejections.
   // Owner only: the room's owner key or the server's creator key.
   | { op: "allowClips"; allowed: boolean; ownerKey?: string; creatorKey?: string }

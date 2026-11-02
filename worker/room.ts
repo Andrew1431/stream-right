@@ -423,6 +423,20 @@ export class Room extends DurableObject<Env> {
       }
 
       case "obsKey": {
+        // A new token replaces this browser's old ones (and the one it says it held): they stop
+        // working and any stream using them leaves the room.
+        const replaced = isStr(op.replaces) ? await sha256Hex(op.replaces) : null;
+        const records = await this.ctx.storage.list<ObsKeyRecord>({ prefix: OBS_KEY_PREFIX });
+        const revoked = [...records]
+          .filter(([key, r]) => r.clientId === me.clientId || key === OBS_KEY_PREFIX + replaced)
+          .map(([key]) => key);
+        if (revoked.length) {
+          await this.ctx.storage.delete(revoked);
+          for (const s of [...this.obs.values()]) {
+            if (revoked.includes(OBS_KEY_PREFIX + s.keyHash)) await this.endObs(s);
+          }
+        }
+
         const key = randomToken();
         await this.ctx.storage.put(OBS_KEY_PREFIX + (await sha256Hex(key)), {
           name: me.name,

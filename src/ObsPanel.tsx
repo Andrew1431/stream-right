@@ -30,9 +30,10 @@ export function ObsPanel(props: {
   const server = `${location.origin}/api/rooms/${props.roomId}/whip`;
 
   async function newKey() {
+    if (key && !confirm("Make a new token? The current one stops working, and an OBS stream using it ends.")) return;
     setError("");
     try {
-      const res = await props.conn.request({ op: "obsKey", noClips: props.noClips });
+      const res = await props.conn.request({ op: "obsKey", noClips: props.noClips, replaces: props.obsKey || undefined });
       if (!res.obsKey) throw new Error("No key returned");
       save(keyStore(props.roomId), res.obsKey);
       props.onKey(res.obsKey);
@@ -80,7 +81,7 @@ export function ObsPanel(props: {
         </dd>
       </dl>
       <p className="muted small">
-        The token works until the room's invite link is rotated. Anyone with it can stream into this room as you.{" "}
+        The token works until you make a new one or the room's invite link is rotated. Anyone with it can stream into this room as you.{" "}
         <button
           type="button"
           className="link"
