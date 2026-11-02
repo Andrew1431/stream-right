@@ -63,7 +63,7 @@ export function Home() {
 
   return (
     <main className="page">
-      <h1>stream</h1>
+      <h1 className="brand">stream</h1>
       <p className="muted">Rooms for watching each other's games. Join with an invite link.</p>
 
       {!creatorKey ? (

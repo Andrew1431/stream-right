@@ -25,11 +25,11 @@ const CUSTOM_STORE = "customShare";
 type Quality = "auto" | Rid;
 type LayoutMode = "focus" | "split";
 
-const QUALITIES: { id: Quality; label: string }[] = [
-  { id: "auto", label: "Auto" },
-  { id: "f", label: "High" },
-  { id: "h", label: "Medium" },
-  { id: "q", label: "Low" },
+const QUALITIES: { id: Quality; label: string; hint: string }[] = [
+  { id: "auto", label: "Auto", hint: "Fits the tile and your connection" },
+  { id: "f", label: "High", hint: "Full resolution" },
+  { id: "h", label: "Medium", hint: "Smaller copy" },
+  { id: "q", label: "Low", hint: "Smallest copy" },
 ];
 
 const THUMB_LAYER: Layer = { rid: "q", fixed: false };
@@ -139,7 +139,8 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
   const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map());
   const [subscriber, setSubscriber] = useState<Subscriber | null>(null);
   const [focusId, setFocusId] = useState<string | null>(null);
-  const [quality, setQuality] = useState<Quality>("auto");
+  // Quality is chosen per stream, from the menu on that stream's tile.
+  const [qualities, setQualities] = useState<Record<string, Quality>>({});
   const [showObs, setShowObs] = useState(false);
   const [obsKey, setObsKey] = useState(() => loadObsKey(props.roomId));
   const [myObsKeyId, setMyObsKeyId] = useState("");
@@ -197,6 +198,7 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
   // Big tiles get the chosen quality. Auto picks the smallest layer that still fills the tile,
   // and lets the SFU step down further when bandwidth is short.
   const layerFor = (m: Member): Layer => {
+    const quality = qualities[m.id] ?? "auto";
     if (quality !== "auto" || !m.stream) return { rid: quality === "auto" ? "f" : quality, fixed: quality !== "auto" };
     const fallback = split && remoteCount > 2 ? 1 : 0;
     const index = autoLayerIndex(m.stream, tileSizes[m.id], sources[m.stream.sessionId]) ?? fallback;
@@ -285,6 +287,8 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
       big={kind === "big"}
       onSize={kind === "big" ? (w, h) => onTileSize(m.id, w, h) : undefined}
       onVideoSize={(w, h) => onRemoteVideo(m, w, h)}
+      quality={kind === "big" && m.id !== you ? (qualities[m.id] ?? "auto") : undefined}
+      onQuality={(q) => setQualities((prev) => ({ ...prev, [m.id]: q }))}
     />
   );
 
@@ -315,15 +319,6 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
         </div>
 
         <div className="row">
-          {remoteCount > 0 && (
-            <div className="segmented" title="Quality of the streams you're watching">
-              {QUALITIES.map((q) => (
-                <button key={q.id} type="button" className={quality === q.id ? "active" : ""} onClick={() => setQuality(q.id)}>
-                  {q.label}
-                </button>
-              ))}
-            </div>
-          )}
           {watching.length > 1 && (
             <div className="segmented">
               <button type="button" className={layout === "focus" ? "active" : ""} onClick={() => changeLayout("focus")}>
@@ -466,6 +461,9 @@ function VideoTile(props: {
   paused?: boolean;
   onSize?: (w: number, h: number) => void;
   onVideoSize?: (w: number, h: number) => void;
+  // Set on big remote tiles: the quality menu for this stream.
+  quality?: Quality;
+  onQuality?: (q: Quality) => void;
 }) {
   const ref = useRef<HTMLVideoElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -526,10 +524,82 @@ function VideoTile(props: {
       </div>
       {props.big && (
         <div className="tile-actions">
+          {props.quality && props.onQuality && (
+            <QualityMenu
+              name={props.member.name}
+              value={props.quality}
+              layered={(props.member.stream?.rids?.length ?? 3) > 1}
+              onChange={props.onQuality}
+            />
+          )}
           {hasAudio && (
             <button type="button" onClick={() => setMuted((m) => !m)}>{muted ? "Unmute" : "Mute"}</button>
           )}
           <button type="button" onClick={toggleFullscreen} title="Fullscreen (or double-click)">⛶</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Per-stream quality picker that lives on the tile it controls.
+function QualityMenu(props: { name: string; value: Quality; layered: boolean; onChange: (q: Quality) => void }) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: Event) => {
+      if (e instanceof KeyboardEvent ? e.key === "Escape" : !root.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", close);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", close);
+    };
+  }, [open]);
+
+  if (!props.layered) {
+    return (
+      <span className="quality-pill fixed" title={`${props.name} sends a single quality, set in their OBS`}>
+        Source
+      </span>
+    );
+  }
+
+  const current = QUALITIES.find((q) => q.id === props.value)!;
+  return (
+    <div className="quality" ref={root}>
+      <button
+        type="button"
+        className="quality-pill"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title={`Quality for ${props.name}`}
+        onClick={() => setOpen((o) => !o)}
+      >
+        {current.label} <span aria-hidden>▾</span>
+      </button>
+      {open && (
+        <div className="quality-menu" role="menu" aria-label={`Quality for ${props.name}`}>
+          <div className="quality-menu-title">Quality for {props.name}</div>
+          {QUALITIES.map((q) => (
+            <button
+              key={q.id}
+              type="button"
+              role="menuitemradio"
+              aria-checked={q.id === props.value}
+              className={q.id === props.value ? "active" : ""}
+              onClick={() => {
+                props.onChange(q.id);
+                setOpen(false);
+              }}
+            >
+              <span>{q.label}</span>
+              <span className="muted">{q.hint}</span>
+            </button>
+          ))}
         </div>
       )}
     </div>
