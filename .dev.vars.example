@@ -1,1 +1,3 @@
 CREATOR_KEY=change-me
+REALTIME_APP_ID=your-sfu-app-id
+REALTIME_APP_SECRET=your-sfu-app-secret
