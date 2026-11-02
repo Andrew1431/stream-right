@@ -460,9 +460,11 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
     <main className="room">
       <header className="topbar">
         <div className="row">
-          <a className="home-link" href="/" title="All rooms">stream</a>
+          <div className="masthead">
+            <a className="home-link" href="/" title="All rooms">stream</a>
+            <StatusBadge status={status} />
+          </div>
           <strong className="room-name">{props.roomId}</strong>
-          <StatusBadge status={status} />
           {clipsAllowed && (
             <button
               type="button"
@@ -473,22 +475,7 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
               Clips on
             </button>
           )}
-          <ul className="people">
-            {members.map((m) => (
-              <li key={m.id} className={m.stream ? "live" : ""} title={m.stream ? "Sharing" : undefined}>
-                {m.name}
-                {m.id === you && <span className="muted"> (you)</span>}
-                {m.buffering && (
-                  <span
-                    className="buffering"
-                    role="img"
-                    title="Keeping a clip buffer of the streams they watch"
-                    aria-label="keeping a clip buffer"
-                  />
-                )}
-              </li>
-            ))}
-          </ul>
+          <Participants members={members} you={you} />
         </div>
 
         <div className="controls">
@@ -952,6 +939,33 @@ function StatusBadge({ status }: { status: RoomStatus }) {
     closed: "Disconnected",
   }[status.kind];
   return <span className={`badge ${status.kind}`}>{label}</span>;
+}
+
+// A head-and-shoulders count of who's here; the names show on hover or focus.
+function Participants({ members, you }: { members: Member[]; you: string | null }) {
+  const people = members.filter((m) => !m.obs).length;
+  return (
+    <div className="participants" tabIndex={0} aria-label={`${people} ${people === 1 ? "person" : "people"} in the room`}>
+      <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+        <circle cx="8" cy="5" r="3" fill="currentColor" />
+        <path d="M2 14.5c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5" fill="currentColor" />
+      </svg>
+      <span className="participants-count">{people}</span>
+      <div className="participants-pop" role="tooltip">
+        <ul className="people">
+          {members.map((m) => (
+            <li key={m.id} className={m.stream ? "live" : ""}>
+              <span className="person-name">{m.name}</span>
+              {m.id === you && <span className="muted"> (you)</span>}
+              {m.buffering && (
+                <span className="buffering" role="img" title="Keeping a clip buffer of the streams they watch" aria-label="keeping a clip buffer" />
+              )}
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
 }
 
 // OBS's three-lobed mark in a ring, with a small cog: this button opens stream settings.

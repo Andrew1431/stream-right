@@ -453,10 +453,28 @@ a.link:hover {
   font-size: 1.2rem;
 }
 
-.home-link {
+/* Wordmark with the connection status set underneath, divided from the room name. */
+.masthead {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
   padding-right: 12px;
   border-right: 1px solid var(--seam);
   box-shadow: 1px 0 0 var(--edge);
+  line-height: 1.1;
+}
+
+.masthead .badge {
+  gap: 5px;
+  font-size: 0.66rem;
+}
+
+.masthead .badge::before {
+  width: 6px;
+  height: 6px;
+}
+
+.home-link {
   font-weight: 800;
   font-size: 1.05rem;
   font-variation-settings: "wdth" 125;
@@ -465,6 +483,65 @@ a.link:hover {
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
+}
+
+/* Who's here: a count in a recessed well, names on hover or focus. */
+.participants {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 11px 4px 9px;
+  border-radius: 999px;
+  background: var(--graphite-deep);
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.6), 0 1px 0 var(--edge);
+  color: var(--pewter);
+  font-size: 0.85rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+}
+
+.participants-count {
+  color: var(--platinum);
+}
+
+.participants-pop {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 40;
+  /* The padding bridges the gap so the pointer can move into the list. */
+  padding-top: 8px;
+  display: none;
+}
+
+.participants:hover .participants-pop,
+.participants:focus-within .participants-pop {
+  display: block;
+}
+
+.participants-pop .people {
+  flex-direction: column;
+  flex-wrap: nowrap;
+  min-width: 200px;
+  max-height: 60dvh;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--seam);
+  border-radius: 12px;
+  background: var(--brushed), linear-gradient(180deg, var(--steel) 0%, var(--steel-lo) 100%);
+  box-shadow: var(--float), var(--machined);
+}
+
+.participants-pop .people li {
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: none;
+  box-shadow: none;
+  color: var(--platinum);
+  font-weight: 500;
+  white-space: nowrap;
 }
 
 .people {
