@@ -144,6 +144,11 @@ export class Room extends DurableObject<Env> {
 
   private async startObs(offer: string, keyHash: string, name: string, whipPath: string): Promise<Response> {
     const tracks = parseOfferTracks(offer);
+    // Simulcast layout differs between encoders; log it so layer mapping can be checked.
+    console.log("whip offer", {
+      tracks,
+      simulcast: offer.match(/^a=(?:simulcast|rid):.*$/gm),
+    });
     if (!tracks.some((t) => t.trackName === "video")) return text("Offer has no video", 400);
 
     let answer: string;

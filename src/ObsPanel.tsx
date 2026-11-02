@@ -71,6 +71,11 @@ export function ObsPanel(props: {
           </button>
           <CopyButton value={key} />
         </dd>
+        <dt>Simulcast</dt>
+        <dd>
+          <code>Total Layers: 3</code>{" "}
+          <span className="muted small">(OBS 32+). Viewers' quality buttons and smaller tiles then get a smaller copy.</span>
+        </dd>
       </dl>
       <p className="muted small">
         The token works until the room's invite link is rotated. Anyone with it can stream into this room as you.{" "}
@@ -100,7 +105,8 @@ export function ObsPanel(props: {
       </ul>
 
       <p className="muted small">
-        Without simulcast OBS sends one quality, so viewers' High/Medium/Low buttons won't change an OBS stream.
+        With 1 layer (or older OBS) everyone gets the full stream and the High/Medium/Low buttons do nothing for it.
+        With 3 layers OBS also sends 2/3 and 1/3 size copies; the bitrate you set is for the full-size one.
       </p>
       {error && <p className="error small">{error}</p>}
     </section>
