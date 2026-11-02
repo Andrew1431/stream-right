@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>stream: watch your friends play</title>
+  <meta name="description" content="Self-hosted rooms for watching each other's games at full quality. Everyone streams at once, up to 4K or high frame rates, on your own Cloudflare account." />
+  <meta property="og:title" content="stream: watch your friends play" />
+  <meta property="og:description" content="Self-hosted rooms for watching each other's games at full quality, on your own Cloudflare account." />
+  <meta property="og:image" content="img/focus.webp" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&display=swap" />
+  <style>
+    :root {
+      --graphite: #1c1f24;
+      --graphite-deep: #121417;
+      --steel-hi: #2f343c;
+      --steel: #2a2f37;
+      --steel-lo: #22262c;
+      --edge: rgb(255 255 255 / 0.07);
+      --seam: rgb(0 0 0 / 0.55);
+      --platinum: #e8ebee;
+      --platinum-lo: #c3c9cf;
+      --pewter: #98a1ab;
+      --tally: #ff5a4e;
+      --heat: linear-gradient(100deg, #e2b25a 0%, #c8668f 52%, #8a6cf2 100%);
+      --brushed: repeating-linear-gradient(90deg, rgb(255 255 255 / 0.014) 0 1px, transparent 1px 3px);
+      --machined: inset 0 1px 0 var(--edge), 0 1px 0 var(--seam);
+      --float: 0 30px 60px -20px rgb(0 0 0 / 0.8), 0 0 0 1px rgb(0 0 0 / 0.6);
+      --measure: 34rem;
+      --page: min(1180px, 100vw - 32px);
+    }
+    * { box-sizing: border-box; }
+    html { color-scheme: dark; }
+    body {
+      margin: 0;
+      background: var(--graphite-deep);
+      background-image: var(--brushed), linear-gradient(180deg, var(--graphite) 0, var(--graphite-deep) 900px);
+      color: var(--platinum);
+      font: 400 17px/1.6 Archivo, system-ui, sans-serif;
+      font-variation-settings: "wdth" 100;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: inherit; }
+    img { display: block; max-width: 100%; height: auto; }
+    :focus-visible { outline: 2px solid #e2b25a; outline-offset: 3px; border-radius: 6px; }
+    .wrap { width: var(--page); margin: 0 auto; }
+
+    /* Rail */
+    .rail { display: flex; align-items: center; justify-content: space-between; padding: 22px 0; }
+    .mark {
+      font-weight: 800; font-size: 26px; letter-spacing: -0.02em; text-decoration: none;
+      font-variation-settings: "wdth" 125;
+      background: var(--heat); -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+    .rail nav { display: flex; gap: 22px; font-size: 15px; color: var(--pewter); }
+    .rail nav a { text-decoration: none; }
+    .rail nav a:hover { color: var(--platinum); }
+
+    /* Hero */
+    .hero { padding: 56px 0 0; }
+    .hero h1 {
+      margin: 0; max-width: 15ch;
+      font-weight: 800; font-size: clamp(42px, 7.2vw, 92px); line-height: 0.95; letter-spacing: -0.035em;
+      font-variation-settings: "wdth" 118;
+    }
+    .hero p.lede { max-width: var(--measure); margin: 26px 0 0; font-size: 20px; color: var(--platinum-lo); }
+    .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 32px; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 10px; padding: 13px 20px; border-radius: 10px;
+      font-weight: 650; font-size: 16px; text-decoration: none; border: 0;
+    }
+    .btn.primary {
+      color: #15171b;
+      background: linear-gradient(180deg, #f6f8fa 0%, #d5dae0 55%, #c3c9cf 100%);
+      box-shadow: inset 0 1px 0 #fff, 0 1px 0 var(--seam), 0 8px 24px -10px rgb(0 0 0 / 0.8);
+    }
+    .btn.primary:hover { background: linear-gradient(180deg, #fff 0%, #e1e5ea 55%, #cdd3d9 100%); }
+    .btn.steel { color: var(--platinum); background: var(--steel); background-image: var(--brushed); box-shadow: var(--machined), 0 0 0 1px rgb(0 0 0 / 0.5); }
+    .btn.steel:hover { background-color: var(--steel-hi); }
+
+    .bezel {
+      margin-top: 64px; padding: 10px; border-radius: 18px;
+      background: linear-gradient(180deg, #3a4049, #22262c 30%, #1a1d22);
+      box-shadow: var(--float), inset 0 1px 0 rgb(255 255 255 / 0.12);
+    }
+    .bezel img { border-radius: 10px; }
+    .hero .bezel { position: relative; }
+    .live {
+      position: absolute; top: -14px; right: 28px; display: inline-flex; align-items: center; gap: 8px;
+      padding: 6px 12px; border-radius: 999px; font-size: 13px; font-weight: 700;
+      background: var(--steel); box-shadow: var(--machined), 0 0 0 1px rgb(0 0 0 / 0.6);
+    }
+    .live::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--tally); box-shadow: 0 0 10px var(--tally); }
+    @media (prefers-reduced-motion: no-preference) {
+      .live::before { animation: tally 2.4s ease-in-out infinite; }
+      @keyframes tally { 50% { opacity: 0.35; box-shadow: none; } }
+    }
+
+    .facts {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; margin: 40px 0 0; padding: 0; list-style: none;
+      border-top: 1px solid var(--edge);
+    }
+    .facts li { padding: 18px 20px 0 0; font-size: 15px; color: var(--pewter); }
+    .facts strong { display: block; color: var(--platinum); font-size: 17px; }
+
+    /* Sections */
+    section { padding: 120px 0 0; }
+    h2 {
+      margin: 0; max-width: 20ch;
+      font-weight: 800; font-size: clamp(30px, 4vw, 48px); line-height: 1.04; letter-spacing: -0.025em;
+      font-variation-settings: "wdth" 112;
+    }
+    .copy { max-width: var(--measure); color: var(--platinum-lo); }
+    .copy p { margin: 18px 0 0; }
+
+    .features { display: grid; grid-template-columns: 1.55fr 1fr; gap: 28px; margin-top: 48px; align-items: start; }
+    .features figure { margin: 0; }
+    .features .bezel { margin-top: 0; padding: 7px; border-radius: 14px; }
+    .features .bezel img { border-radius: 8px; }
+    .stack { display: grid; gap: 28px; }
+    figcaption { margin-top: 14px; max-width: 30rem; font-size: 15px; color: var(--pewter); }
+    figcaption strong { color: var(--platinum); font-weight: 650; }
+
+    .split { display: grid; grid-template-columns: 1fr 1.3fr; gap: 56px; align-items: center; }
+    .split .bezel { margin-top: 0; }
+    .ticks { margin: 22px 0 0; padding: 0; list-style: none; }
+    .ticks li { position: relative; padding: 10px 0 10px 22px; border-top: 1px solid var(--edge); font-size: 16px; }
+    .ticks li::before { content: ""; position: absolute; left: 0; top: 20px; width: 8px; height: 2px; background: var(--platinum-lo); }
+
+    /* Cost */
+    .cost { display: grid; grid-template-columns: 1fr 1fr; gap: 56px; align-items: start; margin-top: 44px; }
+    .meter {
+      padding: 28px; border-radius: 16px; background: var(--steel-lo); background-image: var(--brushed);
+      box-shadow: var(--machined), 0 0 0 1px rgb(0 0 0 / 0.5);
+    }
+    .meter .big { font-weight: 800; font-size: clamp(56px, 8vw, 96px); line-height: 1; letter-spacing: -0.04em; font-variation-settings: "wdth" 125; }
+    .meter .scenario { margin: 10px 0 0; color: var(--pewter); font-size: 15px; }
+    .bar { position: relative; height: 14px; margin: 28px 0 10px; border-radius: 7px; background: #0d0f12; box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.8), 0 1px 0 var(--edge); overflow: hidden; }
+    .bar span { position: absolute; inset: 0 auto 0 0; width: 7%; background: var(--heat); border-radius: 7px; }
+    .scale { display: flex; justify-content: space-between; font-size: 13px; color: var(--pewter); }
+    table { width: 100%; border-collapse: collapse; font-size: 16px; font-variant-numeric: tabular-nums; }
+    th, td { padding: 12px 0; text-align: left; border-bottom: 1px solid var(--edge); }
+    th { color: var(--pewter); font-weight: 500; font-size: 14px; }
+    td:last-child, th:last-child { text-align: right; }
+    .note { margin-top: 16px; font-size: 14px; color: var(--pewter); }
+
+    /* Setup */
+    ol.steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 28px; margin: 48px 0 0; padding: 0; list-style: none; counter-reset: step; }
+    ol.steps li { counter-increment: step; padding-top: 22px; border-top: 2px solid var(--steel-hi); }
+    ol.steps li::before {
+      content: counter(step); display: block; margin-bottom: 14px;
+      font-weight: 800; font-size: 40px; line-height: 1; font-variation-settings: "wdth" 125; color: var(--pewter);
+    }
+    ol.steps h3 { margin: 0 0 8px; font-size: 19px; }
+    ol.steps p { margin: 0; color: var(--platinum-lo); font-size: 16px; }
+    code { font: 500 0.9em ui-monospace, "Cascadia Code", Consolas, monospace; background: #0d0f12; padding: 2px 6px; border-radius: 5px; }
+    .needs { margin-top: 36px; padding: 18px 20px; border-radius: 12px; background: var(--steel-lo); box-shadow: var(--machined); font-size: 15px; color: var(--platinum-lo); max-width: 46rem; }
+
+    footer { margin-top: 140px; padding: 28px 0 40px; border-top: 1px solid var(--edge); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; font-size: 14px; color: var(--pewter); }
+
+    @media (max-width: 900px) {
+      .features, .split, .cost { grid-template-columns: 1fr; gap: 32px; }
+      ol.steps { grid-template-columns: 1fr; }
+      .facts { grid-template-columns: 1fr 1fr; }
+      section { padding-top: 88px; }
+    }
+    @media (max-width: 520px) {
+      .rail nav a:not(:last-child) { display: none; }
+      .facts { grid-template-columns: 1fr; }
+      .bezel { padding: 5px; border-radius: 12px; }
+      .live { right: 14px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="rail">
+      <a class="mark" href="./">stream</a>
+      <nav>
+        <a href="#features">Features</a>
+        <a href="#cost">Cost</a>
+        <a href="#setup">Setup</a>
+        <a href="https://github.com/OWNER/REPO">GitHub</a>
+      </nav>
+    </header>
+
+    <main>
+      <div class="hero">
+        <h1>Watch your friends play, at the quality they play at.</h1>
+        <p class="lede">Private rooms where everyone can stream at once, up to 4K or high frame rates, and each viewer picks what they watch. You host it on your own Cloudflare account, so there's no subscription and no per-seat fee.</p>
+        <div class="actions">
+          <a class="btn primary" href="https://deploy.workers.cloudflare.com/?url=https://github.com/OWNER/REPO">Deploy to Cloudflare</a>
+          <a class="btn steel" href="https://github.com/OWNER/REPO#set-it-up">Read the setup guide</a>
+        </div>
+        <div class="bezel">
+          <span class="live">3 streaming</span>
+          <img src="img/focus.webp" width="2880" height="1800" alt="A room with three friends streaming: a racing game fills most of the screen, with a shooter and a strategy game as thumbnails on the right." />
+        </div>
+        <ul class="facts">
+          <li><strong>Everyone streams</strong>Share a game each, all at once</li>
+          <li><strong>Up to 4K or 240fps</strong>Whatever your upload carries</li>
+          <li><strong>Link-only rooms</strong>No accounts, no sign-ups</li>
+          <li><strong>MIT licensed</strong>Your server, your rules</li>
+        </ul>
+      </div>
+
+      <section id="features">
+        <h2>Built for watching, not broadcasting.</h2>
+        <div class="copy">
+          <p>Streaming sites are made for one streamer and a crowd. This is made for four friends on a call who want to see each other's screens properly.</p>
+        </div>
+        <div class="features">
+          <figure>
+            <div class="bezel"><img src="img/split.webp" width="2880" height="1800" loading="lazy" alt="Split view showing three streams side by side." /></div>
+            <figcaption><strong>Focus or split.</strong> Watch one game large with the rest as thumbnails, or split the screen evenly between everyone streaming.</figcaption>
+          </figure>
+          <div class="stack">
+            <figure>
+              <div class="bezel"><img src="img/quality.webp" width="1520" height="950" loading="lazy" alt="The quality menu on one stream, offering Auto, High, Medium and Low." /></div>
+              <figcaption><strong>Quality per tile.</strong> Each stream is sent at full, half and quarter size. Auto picks the one that fits the tile, or you choose.</figcaption>
+            </figure>
+            <figure>
+              <div class="bezel"><img src="img/corner.webp" width="1520" height="950" loading="lazy" alt="A small draggable preview of your own stream in the corner of the room." /></div>
+              <figcaption><strong>Your stream stays small.</strong> What you're sharing sits in a corner preview you can drag or collapse, and pauses when you tab away.</figcaption>
+            </figure>
+          </div>
+        </div>
+      </section>
+
+      <section id="obs" class="split">
+        <div>
+          <h2>Stream from OBS when the browser isn't enough.</h2>
+          <div class="copy">
+            <p>Browsers throttle screen capture while your game has focus. OBS doesn't. Paste the room's server and token into OBS and your game goes out on your graphics card's encoder.</p>
+          </div>
+          <ul class="ticks">
+            <li>WHIP built into OBS 30+, nothing to install</li>
+            <li>Three simulcast layers on OBS 32+, so viewers still get Auto quality</li>
+            <li>Capture game audio only, keep voice chat off the stream</li>
+            <li>Each person gets their own token, revoked when the link rotates</li>
+          </ul>
+        </div>
+        <div class="bezel"><img src="img/obs.webp" width="2880" height="1800" loading="lazy" alt="The Stream from OBS panel with the server address, a hidden token and recommended encoder settings." /></div>
+      </section>
+
+      <section id="cost">
+        <h2>You pay Cloudflare for what's watched. Usually nothing.</h2>
+        <div class="cost">
+          <div class="meter">
+            <div class="big">~70 GB</div>
+            <p class="scenario">Five friends, a five-hour evening, each watching a 1080p60 stream.</p>
+            <div class="bar" role="img" aria-label="About 70 of the 1,000 free gigabytes each month"><span></span></div>
+            <div class="scale"><span>0</span><span>1,000 GB free every month</span></div>
+            <p class="note">That's about a dozen evenings a month before the first cent. After that it's $0.05 per GB. Streaming out is free; only what viewers receive counts.</p>
+          </div>
+          <div>
+            <table>
+              <thead><tr><th>Watching</th><th>Per viewer, per hour</th></tr></thead>
+              <tbody>
+                <tr><td>4K60</td><td>~8 GB</td></tr>
+                <tr><td>1440p60</td><td>~4 GB</td></tr>
+                <tr><td>1080p60</td><td>~3 GB</td></tr>
+                <tr><td>A thumbnail</td><td>~0.3 GB</td></tr>
+                <tr><td>Tab in the background</td><td>~0.05 GB</td></tr>
+              </tbody>
+            </table>
+            <p class="note">Idle rooms, and streams nobody is watching, cost nothing. Hidden tabs drop to audio after 15 seconds.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="setup">
+        <h2>Running in about ten minutes.</h2>
+        <ol class="steps">
+          <li>
+            <h3>Create a Realtime app</h3>
+            <p>In the Cloudflare dashboard, open <strong>Realtime → Serverless SFU</strong> and create an app. Keep its App ID and App Secret handy.</p>
+          </li>
+          <li>
+            <h3>Deploy</h3>
+            <p>Press <strong>Deploy to Cloudflare</strong>, paste the two Realtime values and a creator key you make up. Or clone the repo and run <code>npm run deploy</code>.</p>
+          </li>
+          <li>
+            <h3>Make a room, send the link</h3>
+            <p>Open your site, enter the creator key, name a room. Anyone with the invite link can join. Rotate it to lock everyone out.</p>
+          </li>
+        </ol>
+        <p class="needs">You need a free Cloudflare account with a payment method on file; Cloudflare asks for one before turning on Realtime. Want the whole friend group to make rooms? Set <code>ROOM_CREATION</code> to <code>"open"</code>.</p>
+        <div class="actions">
+          <a class="btn primary" href="https://deploy.workers.cloudflare.com/?url=https://github.com/OWNER/REPO">Deploy to Cloudflare</a>
+          <a class="btn steel" href="https://github.com/OWNER/REPO">View on GitHub</a>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <span>MIT licensed. Runs on Cloudflare Workers, Durable Objects and Realtime.</span>
+      <a href="https://github.com/OWNER/REPO">Source on GitHub</a>
+    </footer>
+  </div>
+</body>
+</html>

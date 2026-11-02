@@ -2,6 +2,8 @@
 
 Private rooms for watching each other's games, at the quality you actually play at.
 
+![A room with four friends streaming, split view](docs/img/split.webp)
+
 Send friends a link. Everyone in the room can share a screen, a game window or an OBS feed at the same time, up to 4K or high frame rates, and each viewer picks how they watch: one stream large or several side by side. It runs on your own Cloudflare account, so there's no subscription and no per-seat fee, and most friend groups stay inside Cloudflare's free allowance.
 
 <!-- TODO: replace OWNER/REPO once the repository is public. -->
