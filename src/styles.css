@@ -834,3 +834,132 @@ button.thumb:hover .tile {
   line-height: 1.65;
   max-width: 72ch;
 }
+
+/* Clips: always visible to the room when they're on */
+
+.clips-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border: 1px solid rgb(226 178 90 / 0.45);
+  border-radius: 999px;
+  background: rgb(226 178 90 / 0.1);
+  box-shadow: none;
+  color: var(--warn);
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.clips-badge::before,
+.people .buffering {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--warn);
+  box-shadow: 0 0 0 2px rgb(226 178 90 / 0.3);
+}
+
+.clips-badge.active {
+  background: rgb(226 178 90 / 0.2);
+}
+
+.people .buffering {
+  display: inline-block;
+  flex: none;
+}
+
+.clips-panel {
+  max-height: calc(100dvh - 80px);
+  overflow-y: auto;
+}
+
+.clips-panel .check {
+  margin: 14px 0 0;
+}
+
+.check {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-weight: 500;
+  margin: 0;
+}
+
+.check input {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 3px 0 0;
+  padding: 0;
+  accent-color: var(--warn);
+}
+
+.clip-length {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin: 10px 0 0 26px;
+  font-weight: 500;
+}
+
+.clip-length input {
+  padding: 0;
+  accent-color: var(--warn);
+}
+
+.clip-stat {
+  display: contents;
+}
+
+.usage-stats dd.warn {
+  color: var(--warn);
+}
+
+.clips-notice {
+  position: fixed;
+  top: 72px;
+  left: 50%;
+  z-index: 40;
+  width: min(460px, calc(100vw - 32px));
+  margin: 0;
+  transform: translateX(-50%);
+  box-shadow: var(--float), var(--machined);
+}
+
+.clips-notice h2 {
+  margin: 0 0 8px;
+}
+
+.clips-notice .row {
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+
+.toasts {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  width: max-content;
+  max-width: calc(100vw - 32px);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.toast {
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid rgb(226 178 90 / 0.35);
+  background: rgb(18 20 24 / 0.9);
+  backdrop-filter: blur(8px);
+  box-shadow: var(--float);
+  font-size: 0.88rem;
+  font-weight: 500;
+}

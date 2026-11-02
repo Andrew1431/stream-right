@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
-import { MAX_NAME_LENGTH, RIDS, type Member, type Rid, type Stream } from "../shared/protocol";
+import { CLIP_MAX_SECONDS, CLIP_MIN_SECONDS, MAX_NAME_LENGTH, RIDS, type Member, type Rid, type Stream } from "../shared/protocol";
+import { Clipper, clipsSupported } from "./clips/clipper";
+import { ClipsNotice, clipsBadgeHint, ClipsPanel, playShutter, Toasts, useClipStats, type Toast } from "./ClipsPanel";
 import { RoomConnection, type RoomStatus } from "./connection";
 import {
   FPS_CHOICES,
@@ -23,6 +25,13 @@ const NAME_STORE = "displayName";
 const PRESET_STORE = "sharePreset";
 const LAYOUT_STORE = "layout";
 const CUSTOM_STORE = "customShare";
+const CLIP_BUFFER_STORE = "clipBuffer";
+const CLIP_SECONDS_STORE = "clipSeconds";
+const NO_CLIPS_STORE = "noClips";
+const CLIP_MUTED_STORE = "clipMuted";
+const CLIPS_SEEN_STORE = "clipsNoticeSeen";
+const TOAST_MS = 6_000;
+const CLIP_DONE_MS = 4_000;
 
 type Quality = "auto" | Rid;
 type LayoutMode = "focus" | "split";
@@ -121,7 +130,7 @@ function useConnection(roomId: string, token: string, name: string) {
 }
 
 function Room(props: { roomId: string; token: string; name: string; onRename: () => void }) {
-  const { conn, status, members, you, epoch } = useConnection(props.roomId, props.token, props.name);
+  const { conn, status, members, you, epoch, clipsAllowed } = useConnection(props.roomId, props.token, props.name);
   useEffect(() => {
     if (status.kind === "connected") rememberRoom(props.roomId, props.token);
   }, [status.kind, props.roomId, props.token]);
@@ -146,8 +155,9 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
   const [subscriber, setSubscriber] = useState<Subscriber | null>(null);
   const [showUsage, setShowUsage] = useState(false);
   const closeUsage = useCallback(() => setShowUsage(false), []);
+  const creatorKey = useMemo(() => load("creatorKey", ""), []);
   // Only for whoever saved the creator key on this browser, and only if the server has an API token.
-  const usage = useUsage(useMemo(() => load("creatorKey", ""), []));
+  const usage = useUsage(creatorKey);
   const [focusId, setFocusId] = useState<string | null>(null);
   // Quality is chosen per stream, from the menu on that stream's tile.
   const [qualities, setQualities] = useState<Record<string, Quality>>({});
@@ -161,6 +171,32 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
   const requested = useRef(new Map<string, { index: number; at: number }>());
   const { active: pageActive } = usePageActive();
   const tabHidden = useHiddenFor(HIDDEN_VIDEO_OFF_MS);
+
+  // Clips
+  const clipper = useMemo(() => new Clipper(), []);
+  useEffect(() => () => clipper.dispose(), [clipper]);
+  const ownerKey = useMemo(
+    () => load<{ roomId: string; ownerKey?: string }[]>("myRooms", []).find((r) => r.roomId === props.roomId)?.ownerKey ?? "",
+    [props.roomId],
+  );
+  const isOwner = !!ownerKey || !!creatorKey;
+  const [ownerError, setOwnerError] = useState("");
+  const [clipBuffer, setClipBuffer] = useState(() => load<unknown>(CLIP_BUFFER_STORE, false) === true);
+  const [clipSeconds, setClipSeconds] = useState(() => {
+    const s = Number(load(CLIP_SECONDS_STORE, 60));
+    return Number.isFinite(s) ? Math.min(CLIP_MAX_SECONDS, Math.max(CLIP_MIN_SECONDS, s)) : 60;
+  });
+  const [noClips, setNoClips] = useState(() => load<unknown>(NO_CLIPS_STORE, false) === true);
+  const [clipMuted, setClipMuted] = useState(() => load<unknown>(CLIP_MUTED_STORE, false) === true);
+  const [showClips, setShowClips] = useState(false);
+  const closeClips = useCallback(() => setShowClips(false), []);
+  const [clipNotice, setClipNotice] = useState(false);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [clipStatus, setClipStatus] = useState<{ kind: "idle" } | { kind: "saving" } | { kind: "done"; count: number }>({ kind: "idle" });
+  const buffering = clipsAllowed && clipBuffer && clipsSupported;
+  const clipStats = useClipStats(clipper, buffering && showClips);
+  const seenAllowed = useRef<boolean | null>(null);
+  const iToggled = useRef(false);
 
   useEffect(() => {
     let current = true;
@@ -179,6 +215,7 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
       conn,
       () => setRemoteStreams(new Map(sub.streams)),
       (e) => setViewError(e?.message ?? ""),
+      clipper,
     );
     setSubscriber(sub);
     return () => {
@@ -238,6 +275,14 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
     setTileSizes((prev) => (prev[id]?.w === w && prev[id]?.h === h ? prev : { ...prev, [id]: { w, h } }));
   }
 
+  // Which streams this browser keeps a clip buffer of: everything it watches, minus opt-outs.
+  // Before the pull effect: starting to buffer rebuilds the connection, best done before pulling.
+  const clipKeys = buffering ? watching.flatMap((m) => (m.stream && !m.stream.noClips ? [m.stream.sessionId] : [])) : [];
+  useEffect(() => {
+    clipper.configure(new Set(clipKeys), clipSeconds);
+    subscriber?.updateClips();
+  }, [clipper, subscriber, clipKeys.join("|"), clipSeconds]);
+
   useEffect(() => {
     if (!subscriber) return;
     const want = new Map<Stream, Layer | null>();
@@ -256,11 +301,102 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
     subscriber.sync(want);
   }, [subscriber, streamingKey(streaming), myObsKeyId, focused?.id, split, layersKey, tabHidden, obsPreview, pageActive]);
 
+  // Everyone sees who keeps a buffer. Re-sent on every (re)join: presence is per connection.
+  useEffect(() => {
+    if (status.kind === "connected") conn.request({ op: "buffering", on: buffering }).catch(() => {});
+  }, [conn, epoch, status.kind === "connected", buffering]);
+
+  // The notice: the first time this browser sees clips on in this room, or when they're switched on.
+  useEffect(() => {
+    if (status.kind !== "connected") return;
+    const prev = seenAllowed.current;
+    seenAllowed.current = clipsAllowed;
+    const seen = load<string[]>(CLIPS_SEEN_STORE, []);
+    if (!clipsAllowed) {
+      setClipNotice(false);
+      if (seen.includes(props.roomId)) save(CLIPS_SEEN_STORE, seen.filter((r) => r !== props.roomId));
+    } else if (iToggled.current) {
+      if (!seen.includes(props.roomId)) save(CLIPS_SEEN_STORE, [...seen, props.roomId]);
+    } else if (prev === false || !seen.includes(props.roomId)) {
+      setClipNotice(true);
+    }
+    iToggled.current = false;
+  }, [clipsAllowed, status.kind === "connected"]);
+
+  function dismissNotice() {
+    setClipNotice(false);
+    const seen = load<string[]>(CLIPS_SEEN_STORE, []);
+    if (!seen.includes(props.roomId)) save(CLIPS_SEEN_STORE, [...seen, props.roomId]);
+  }
+
+  // Every saved clip is announced to the whole room, with a shutter sound unless muted here.
+  const mutedRef = useRef(clipMuted);
+  mutedRef.current = clipMuted;
+  useEffect(
+    () =>
+      conn.onClip((e) => {
+        const who = e.by === conn.snapshot.you ? "You" : e.name;
+        const toast = { id: Math.random(), text: `${who} clipped the last ${e.seconds}s (${e.of.join(", ")})` };
+        setToasts((t) => [...t, toast]);
+        setTimeout(() => setToasts((t) => t.filter((x) => x !== toast)), TOAST_MS);
+        if (!mutedRef.current) playShutter();
+      }),
+    [conn],
+  );
+
+  async function allowClips(allowed: boolean) {
+    setOwnerError("");
+    iToggled.current = true;
+    try {
+      await conn.request({ op: "allowClips", allowed, ownerKey: ownerKey || undefined, creatorKey: creatorKey || undefined });
+    } catch (e) {
+      iToggled.current = false;
+      setOwnerError((e as Error).message);
+    }
+  }
+
+  function changeNoClips(v: boolean) {
+    setNoClips(v);
+    save(NO_CLIPS_STORE, v);
+    if (status.kind === "connected") conn.request({ op: "clipPrefs", noClips: v, obsKey: obsKey || undefined }).catch(() => {});
+  }
+
+  async function saveClip() {
+    setError("");
+    setClipStatus({ kind: "saving" });
+    const time = new Date().toTimeString().slice(0, 8).replace(/:/g, "-");
+    try {
+      const stats = await clipper.stats();
+      const targets = watching.filter((m) => {
+        const s = m.stream && !m.stream.noClips ? stats[m.stream.sessionId] : undefined;
+        return !!s && !s.unsupported && s.seconds >= 1;
+      });
+      if (!targets.length) throw new Error("Nothing to clip yet. The buffer fills as you watch.");
+      const longest = Math.max(...targets.map((m) => stats[m.stream!.sessionId].seconds));
+      // Announce first: if the room won't announce it, no file is made.
+      await conn.request({ op: "clip", seconds: Math.min(clipSeconds, Math.round(longest)), of: targets.map((m) => m.id) });
+      const files = await clipper.save(targets.map((m) => m.stream!.sessionId), clipSeconds);
+      let count = 0;
+      for (const f of files) {
+        const m = targets.find((t) => t.stream!.sessionId === f.key);
+        if (!f.data || !m) continue;
+        download(new Blob([f.data], { type: "video/mp4" }), `${fileSafe(m.name)}-${fileSafe(props.roomId)}-${time}.mp4`);
+        count++;
+      }
+      if (!count) throw new Error("Couldn't save the clip");
+      setClipStatus({ kind: "done", count });
+      setTimeout(() => setClipStatus({ kind: "idle" }), CLIP_DONE_MS);
+    } catch (e) {
+      setError((e as Error).message);
+      setClipStatus({ kind: "idle" });
+    }
+  }
+
   async function startShare() {
     setError("");
     setStarting(true);
     try {
-      const media = await publisher.start(settings);
+      const media = await publisher.start(settings, noClips);
       const s = media.getVideoTracks()[0]?.getSettings() ?? {};
       setCaptured(s.width && s.height ? `${s.width}×${s.height} @ ${Math.round(s.frameRate ?? settings.fps)}fps` : "");
       setLocalStream(media);
@@ -298,6 +434,7 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
       onSize={kind === "big" ? (w, h) => onTileSize(m.id, w, h) : undefined}
       onVideoSize={(w, h) => onRemoteVideo(m, w, h)}
       quality={kind === "big" && m.id !== you ? (qualities[m.id] ?? "auto") : undefined}
+      clipsOff={clipsAllowed && !!m.stream?.noClips}
       onQuality={(q) => setQualities((prev) => ({ ...prev, [m.id]: q }))}
     />
   );
@@ -319,11 +456,29 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
           <a className="home-link" href="/" title="All rooms">stream</a>
           <strong className="room-name">{props.roomId}</strong>
           <StatusBadge status={status} />
+          {clipsAllowed && (
+            <button
+              type="button"
+              className={showClips ? "clips-badge active" : "clips-badge"}
+              title={clipsBadgeHint}
+              onClick={() => setShowClips((s) => !s)}
+            >
+              Clips on
+            </button>
+          )}
           <ul className="people">
             {members.map((m) => (
               <li key={m.id} className={m.stream ? "live" : ""} title={m.stream ? "Sharing" : undefined}>
                 {m.name}
                 {m.id === you && <span className="muted"> (you)</span>}
+                {m.buffering && (
+                  <span
+                    className="buffering"
+                    role="img"
+                    title="Keeping a clip buffer of the streams they watch"
+                    aria-label="keeping a clip buffer"
+                  />
+                )}
               </li>
             ))}
           </ul>
@@ -386,6 +541,26 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
               </button>
             </>
           )}
+          {buffering && (
+            <button
+              type="button"
+              className="chip clip-button"
+              disabled={clipStatus.kind === "saving"}
+              title="Saves one video per stream you're buffering, on this device. Everyone in the room is told."
+              onClick={saveClip}
+            >
+              {clipStatus.kind === "saving"
+                ? "Saving…"
+                : clipStatus.kind === "done"
+                  ? `Saved ${clipStatus.count} clip${clipStatus.count === 1 ? "" : "s"}`
+                  : `Clip last ${clipSeconds}s`}
+            </button>
+          )}
+          {!clipsAllowed && isOwner && (
+            <button type="button" className={showClips ? "chip active" : "chip"} onClick={() => setShowClips((s) => !s)}>
+              Clips off
+            </button>
+          )}
           <button type="button" className={showObs ? "chip active" : "chip"} onClick={() => setShowObs((s) => !s)}>
             Stream from OBS
           </button>
@@ -404,12 +579,46 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
 
       {showUsage && usage && <UsagePanel usage={usage} subscriber={subscriber} onClose={closeUsage} />}
 
+      {showClips && (clipsAllowed || isOwner) && (
+        <ClipsPanel
+          isOwner={isOwner}
+          allowed={clipsAllowed}
+          onAllow={allowClips}
+          ownerError={ownerError}
+          supported={clipsSupported}
+          buffering={buffering}
+          onBuffering={(on) => {
+            setClipBuffer(on);
+            save(CLIP_BUFFER_STORE, on);
+          }}
+          seconds={clipSeconds}
+          onSeconds={(s) => {
+            setClipSeconds(s);
+            save(CLIP_SECONDS_STORE, s);
+          }}
+          streams={watching.map((m) => ({ member: m, key: m.stream && !m.stream.noClips ? m.stream.sessionId : null }))}
+          stats={clipStats}
+          noClips={noClips}
+          onNoClips={changeNoClips}
+          muted={clipMuted}
+          onMuted={(v) => {
+            setClipMuted(v);
+            save(CLIP_MUTED_STORE, v);
+          }}
+          onClose={closeClips}
+        />
+      )}
+
+      {clipNotice && clipsAllowed && <ClipsNotice noClips={noClips} onNoClips={changeNoClips} onDone={dismissNotice} />}
+      <Toasts toasts={toasts} />
+
       {showObs && (
         <ObsPanel
           conn={conn}
           roomId={props.roomId}
           connected={status.kind === "connected"}
           obsKey={obsKey}
+          noClips={noClips}
           onKey={setObsKey}
           onClose={() => setShowObs(false)}
         />
@@ -488,6 +697,8 @@ function VideoTile(props: {
   // Set on big remote tiles: the quality menu for this stream.
   quality?: Quality;
   onQuality?: (q: Quality) => void;
+  // The room allows clips but this streamer opted out.
+  clipsOff?: boolean;
 }) {
   const ref = useRef<HTMLVideoElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -545,6 +756,7 @@ function VideoTile(props: {
         {props.member.name}
         {props.isYou && " (you)"}
         {stats && <span className="muted"> · {stats}</span>}
+        {props.clipsOff && <span className="muted" title="This streamer doesn't allow clips of their stream"> · No clips</span>}
       </div>
       {props.big && (
         <div className="tile-actions">
@@ -650,6 +862,16 @@ function useVideoStats(ref: React.RefObject<HTMLVideoElement | null>, stream: Me
   }, [ref, stream]);
   return stats;
 }
+
+function download(blob: Blob, name: string) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 60_000);
+}
+
+const fileSafe = (s: string) => s.replace(/[^\p{L}\p{N}_-]+/gu, "-").replace(/^-+|-+$/g, "") || "stream";
 
 function StatusBadge({ status }: { status: RoomStatus }) {
   const label = {

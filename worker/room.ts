@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import {
+  CLIP_MAX_SECONDS,
   CloseCode,
   MAX_NAME_LENGTH,
   RIDS,
@@ -51,7 +52,10 @@ type ObsStream = {
   tracks: TrackName[];
   rids: string[];
   startedAt: number;
+  noClips?: boolean;
 };
+
+type ObsKeyRecord = { name: string; createdAt: number; noClips?: boolean };
 
 class BadRequest extends Error {}
 
@@ -64,13 +68,26 @@ const isStr = (v: unknown, max = 128): v is string => typeof v === "string" && v
 const isSdp = (v: unknown): v is string => isStr(v, MAX_MESSAGE_BYTES);
 const isTrackName = (v: unknown): v is TrackName => TRACK_NAMES.includes(v as TrackName);
 
-const toMember = ({ id, name, joinedAt, stream }: Authed): Member => ({ id, name, joinedAt, stream });
+const toMember = ({ id, name, joinedAt, stream, buffering }: Authed): Member => ({
+  id,
+  name,
+  joinedAt,
+  stream,
+  ...(buffering ? { buffering } : {}),
+});
 
 const obsMember = (s: ObsStream): Member => ({
   id: `obs-${s.resourceId}`,
   name: `${s.name} (OBS)`,
   joinedAt: s.startedAt,
-  stream: { sessionId: s.sessionId, tracks: s.tracks, preset: "obs", rids: s.rids, scales: obsScales(s.rids.length) },
+  stream: {
+    sessionId: s.sessionId,
+    tracks: s.tracks,
+    preset: "obs",
+    rids: s.rids,
+    scales: obsScales(s.rids.length),
+    ...(s.noClips ? { noClips: true } : {}),
+  },
   obs: true,
   obsKeyId: s.keyHash.slice(0, OBS_KEY_ID_LENGTH),
 });
@@ -80,11 +97,13 @@ const text = (body: string, status: number, headers: Record<string, string> = {}
 
 export class Room extends DurableObject<Env> {
   private obs = new Map<string, ObsStream>();
+  private clipsAllowed = false;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
       for (const s of (await ctx.storage.get<ObsStream[]>("obsStreams")) ?? []) this.obs.set(s.resourceId, s);
+      this.clipsAllowed = (await ctx.storage.get<boolean>("clipsAllowed")) === true;
     });
   }
 
@@ -149,14 +168,14 @@ export class Room extends DurableObject<Env> {
 
     const key = req.headers.get("Authorization")?.replace(/^Bearer\s+/i, "") ?? "";
     const keyHash = await sha256Hex(key);
-    const owner = key ? await this.ctx.storage.get<{ name: string }>(OBS_KEY_PREFIX + keyHash) : undefined;
+    const owner = key ? await this.ctx.storage.get<ObsKeyRecord>(OBS_KEY_PREFIX + keyHash) : undefined;
     if (!owner) return text("Invalid stream key. Get a new one from the room's Stream from OBS panel.", 401);
 
     if (req.method === "POST" && !resourceId) {
       if (!(req.headers.get("Content-Type") ?? "").includes("application/sdp")) return text("Expected application/sdp", 415);
       const offer = await req.text();
       if (!offer || offer.length > MAX_MESSAGE_BYTES) return text("Bad offer", 400);
-      return this.startObs(offer, keyHash, owner.name, pathname);
+      return this.startObs(offer, keyHash, owner, pathname);
     }
 
     const stream = resourceId ? this.obs.get(resourceId) : undefined;
@@ -170,7 +189,7 @@ export class Room extends DurableObject<Env> {
     return text("Method not allowed", 405, { Allow: "POST, DELETE" });
   }
 
-  private async startObs(offer: string, keyHash: string, name: string, whipPath: string): Promise<Response> {
+  private async startObs(offer: string, keyHash: string, owner: ObsKeyRecord, whipPath: string): Promise<Response> {
     const tracks = parseOfferTracks(offer);
     // Simulcast layout differs between encoders; log it so layer mapping can be checked.
     console.log("whip offer", {
@@ -203,11 +222,12 @@ export class Room extends DurableObject<Env> {
     const stream: ObsStream = {
       resourceId: crypto.randomUUID(),
       keyHash,
-      name,
+      name: owner.name,
       sessionId,
       tracks: published,
       rids: tracks.find((t) => t.trackName === "video")!.rids,
       startedAt: Date.now(),
+      noClips: owner.noClips === true,
     };
     this.obs.set(stream.resourceId, stream);
     await this.saveObs();
@@ -292,7 +312,7 @@ export class Room extends DurableObject<Env> {
     };
     ws.serializeAttachment(member);
 
-    this.send(ws, { type: "welcome", you: member.id, members: this.members() });
+    this.send(ws, { type: "welcome", you: member.id, members: this.members(), clipsAllowed: this.clipsAllowed });
     this.broadcast({ type: "join", member: toMember(member) }, ws);
   }
 
@@ -333,7 +353,15 @@ export class Room extends DurableObject<Env> {
           const preset = PRESET_PATTERN.test(String(op.preset)) ? op.preset : "custom";
           const height = Number.isInteger(op.height) && op.height! >= 100 && op.height! <= 8640 ? op.height : undefined;
           const updated = this.patch(ws, {
-            stream: { sessionId, tracks: published, preset, rids: BROWSER_RIDS, scales: BROWSER_SCALES, height },
+            stream: {
+              sessionId,
+              tracks: published,
+              preset,
+              rids: BROWSER_RIDS,
+              scales: BROWSER_SCALES,
+              height,
+              ...(op.noClips === true ? { noClips: true } : {}),
+            },
           });
           this.broadcast({ type: "update", member: toMember(updated) });
         }
@@ -388,13 +416,89 @@ export class Room extends DurableObject<Env> {
 
       case "obsKey": {
         const key = randomToken();
-        await this.ctx.storage.put(OBS_KEY_PREFIX + (await sha256Hex(key)), { name: me.name, createdAt: Date.now() });
+        await this.ctx.storage.put(OBS_KEY_PREFIX + (await sha256Hex(key)), {
+          name: me.name,
+          createdAt: Date.now(),
+          noClips: op.noClips === true,
+        } satisfies ObsKeyRecord);
         return { obsKey: key };
+      }
+
+      case "allowClips": {
+        if (typeof op.allowed !== "boolean") throw new BadRequest("Bad request");
+        if (!(await this.isOwner(op))) throw new BadRequest("Only the room's owner can change clips");
+        if (op.allowed !== this.clipsAllowed) {
+          this.clipsAllowed = op.allowed;
+          await this.ctx.storage.put("clipsAllowed", op.allowed);
+          this.broadcast({ type: "clips", allowed: op.allowed });
+          // Clients drop their buffers when told; clear the flags too so nobody still shows as buffering.
+          if (!op.allowed) {
+            for (const other of this.ctx.getWebSockets()) {
+              const att = other.deserializeAttachment() as Attachment;
+              if (!att.authed || !att.buffering) continue;
+              this.broadcast({ type: "update", member: toMember(this.patch(other, { buffering: false })) });
+            }
+          }
+        }
+        return {};
+      }
+
+      case "buffering": {
+        const on = op.on === true;
+        if (on && !this.clipsAllowed) throw new BadRequest("Clips are off in this room");
+        if (!!me.buffering !== on) this.broadcast({ type: "update", member: toMember(this.patch(ws, { buffering: on })) });
+        return {};
+      }
+
+      case "clip": {
+        if (!this.clipsAllowed) throw new BadRequest("Clips are off in this room");
+        if (!me.buffering) throw new BadRequest("Turn on your clip buffer first");
+        const seconds = Math.round(Number(op.seconds));
+        if (!(seconds >= 1 && seconds <= CLIP_MAX_SECONDS) || !Array.isArray(op.of) || op.of.length === 0) {
+          throw new BadRequest("Bad clip");
+        }
+        // Names come from the room, not the client, so an announcement can't be dressed up.
+        const members = this.members();
+        const of = [...new Set(op.of)].map((id) => {
+          const m = members.find((x) => x.id === id && x.id !== me.id && x.stream && !x.stream.noClips);
+          if (!m) throw new BadRequest("That stream can't be clipped");
+          return m.name;
+        });
+        this.broadcast({ type: "clip", by: me.id, name: me.name, seconds, of });
+        return {};
+      }
+
+      case "clipPrefs": {
+        const noClips = op.noClips === true;
+        if (me.stream && !!me.stream.noClips !== noClips) {
+          const { noClips: _, ...stream } = me.stream;
+          const updated = this.patch(ws, { stream: noClips ? { ...stream, noClips } : stream });
+          this.broadcast({ type: "update", member: toMember(updated) });
+        }
+        if (isStr(op.obsKey)) {
+          const keyHash = await sha256Hex(op.obsKey);
+          const record = await this.ctx.storage.get<ObsKeyRecord>(OBS_KEY_PREFIX + keyHash);
+          if (record) await this.ctx.storage.put(OBS_KEY_PREFIX + keyHash, { ...record, noClips });
+          for (const s of this.obs.values()) {
+            if (s.keyHash !== keyHash || !!s.noClips === noClips) continue;
+            s.noClips = noClips;
+            await this.saveObs();
+            this.broadcast({ type: "update", member: obsMember(s) });
+          }
+        }
+        return {};
       }
 
       default:
         throw new BadRequest("Unknown op");
     }
+  }
+
+  // Same proof as link rotation: the server's creator key, or the owner key handed out at creation.
+  private async isOwner(op: { ownerKey?: unknown; creatorKey?: unknown }): Promise<boolean> {
+    if (isStr(op.creatorKey) && this.env.CREATOR_KEY && (await safeEqual(op.creatorKey, this.env.CREATOR_KEY))) return true;
+    const ownerHash = await this.ctx.storage.get<string>("ownerHash");
+    return !!ownerHash && isStr(op.ownerKey) && (await safeEqual(await sha256Hex(op.ownerKey), ownerHash));
   }
 
   // Only tracks currently published by someone in this room can be pulled.
