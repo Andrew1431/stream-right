@@ -161,6 +161,7 @@ export class Publisher {
         sdp: pc.localDescription!.sdp,
         tracks,
         preset: settingsId(settings),
+        height: video.getSettings().height,
       });
       checkTracks(res);
       await pc.setRemoteDescription(res.sessionDescription!);

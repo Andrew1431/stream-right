@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
-import { MAX_NAME_LENGTH, type Member, type Rid, type Stream } from "../shared/protocol";
+import { MAX_NAME_LENGTH, RIDS, type Member, type Rid, type Stream } from "../shared/protocol";
 import { RoomConnection, type RoomStatus } from "./connection";
 import {
   FPS_CHOICES,
@@ -35,6 +35,24 @@ const QUALITIES: { id: Quality; label: string }[] = [
 const THUMB_LAYER: Layer = { rid: "q", fixed: false };
 // After the tab has been hidden this long, stop pulling video and keep only audio.
 const HIDDEN_VIDEO_OFF_MS = 15_000;
+const DEFAULT_SCALES = [1, 0.5, 0.25];
+const LAYER_SETTLE_MS = 4_000;
+// Tile sizes are rounded to this many device pixels so small resizes don't switch layers.
+const TILE_SIZE_STEP = 40;
+
+type Size = { w: number; h: number };
+
+// Smallest layer whose height reaches ~85% of what the tile shows; slight upscaling is
+// invisible. Null until we know both the tile size and the source resolution.
+function autoLayerIndex(stream: Stream, tile: Size | undefined, source: { height: number; aspect: number } | undefined) {
+  const sourceHeight = stream.height ?? source?.height;
+  if (!tile || !sourceHeight) return null;
+  const aspect = source?.aspect ?? 16 / 9;
+  const shown = Math.min(tile.h, tile.w / aspect);
+  const scales = stream.scales ?? DEFAULT_SCALES;
+  for (let i = scales.length - 1; i > 0; i--) if (sourceHeight * scales[i] >= shown * 0.85) return i;
+  return 0;
+}
 
 function readToken(): string {
   return new URLSearchParams(location.hash.slice(1)).get("k") ?? "";
@@ -126,6 +144,10 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
   const [obsKey, setObsKey] = useState(() => loadObsKey(props.roomId));
   const [myObsKeyId, setMyObsKeyId] = useState("");
   const [obsPreview, setObsPreview] = useState(false);
+  // Device-pixel size of each big tile, and each source's real resolution once seen.
+  const [tileSizes, setTileSizes] = useState<Record<string, Size>>({});
+  const [sources, setSources] = useState<Record<string, { height: number; aspect: number }>>({});
+  const requested = useRef(new Map<string, { index: number; at: number }>());
   const { active: pageActive } = usePageActive();
   const tabHidden = useHiddenFor(HIDDEN_VIDEO_OFF_MS);
 
@@ -172,10 +194,37 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
   const remoteCount = watching.length;
   const me = members.find((m) => m.id === you);
 
-  // Big tiles get the chosen quality; Auto prefers the top layer but lets the SFU step down.
-  // In split view with 3+ streams each tile is small, so Auto starts at the medium layer.
-  const bigLayer: Layer =
-    quality === "auto" ? { rid: split && remoteCount > 2 ? "h" : "f", fixed: false } : { rid: quality, fixed: true };
+  // Big tiles get the chosen quality. Auto picks the smallest layer that still fills the tile,
+  // and lets the SFU step down further when bandwidth is short.
+  const layerFor = (m: Member): Layer => {
+    if (quality !== "auto" || !m.stream) return { rid: quality === "auto" ? "f" : quality, fixed: quality !== "auto" };
+    const fallback = split && remoteCount > 2 ? 1 : 0;
+    const index = autoLayerIndex(m.stream, tileSizes[m.id], sources[m.stream.sessionId]) ?? fallback;
+    return { rid: RIDS[Math.min(index, RIDS.length - 1)], fixed: false };
+  };
+  const bigLayers = new Map(watching.map((m) => [m.id, layerFor(m)]));
+  const layersKey = [...bigLayers].map(([id, l]) => `${id}:${l.rid}:${l.fixed}`).join("|");
+
+  // Learn each source's real resolution from what arrives, given the layer we asked for.
+  // Skip readings right after a layer change: the old layer can still be on screen.
+  function onRemoteVideo(m: Member, width: number, height: number) {
+    const stream = m.stream;
+    if (!stream || !width || !height) return;
+    const req = requested.current.get(stream.sessionId);
+    if (!req || performance.now() - req.at < LAYER_SETTLE_MS) return;
+    const scales = stream.scales ?? DEFAULT_SCALES;
+    const sourceHeight = Math.round(height / scales[Math.min(req.index, scales.length - 1)]);
+    const aspect = width / height;
+    setSources((prev) => {
+      const old = prev[stream.sessionId];
+      if (old && old.height >= sourceHeight && Math.abs(old.aspect - aspect) < 0.02) return prev;
+      return { ...prev, [stream.sessionId]: { height: Math.max(old?.height ?? 0, sourceHeight), aspect } };
+    });
+  }
+
+  function onTileSize(id: string, w: number, h: number) {
+    setTileSizes((prev) => (prev[id]?.w === w && prev[id]?.h === h ? prev : { ...prev, [id]: { w, h } }));
+  }
 
   useEffect(() => {
     if (!subscriber) return;
@@ -183,11 +232,17 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
     for (const m of watching) {
       if (!m.stream) continue;
       // Hidden tab: keep the audio, drop the video so an idle tab doesn't burn bandwidth.
-      want.set(m.stream, tabHidden ? null : split || m.id === focused?.id ? bigLayer : THUMB_LAYER);
+      const layer = tabHidden ? null : split || m.id === focused?.id ? bigLayers.get(m.id)! : THUMB_LAYER;
+      want.set(m.stream, layer);
+      if (layer) {
+        const index = RIDS.indexOf(layer.rid);
+        const prev = requested.current.get(m.stream.sessionId);
+        if (prev?.index !== index) requested.current.set(m.stream.sessionId, { index, at: performance.now() });
+      }
     }
     if (myObs?.stream && obsPreview && pageActive) want.set(myObs.stream, THUMB_LAYER);
     subscriber.sync(want);
-  }, [subscriber, streamingKey(streaming), myObsKeyId, focused?.id, split, bigLayer.rid, bigLayer.fixed, tabHidden, obsPreview, pageActive]);
+  }, [subscriber, streamingKey(streaming), myObsKeyId, focused?.id, split, layersKey, tabHidden, obsPreview, pageActive]);
 
   async function startShare() {
     setError("");
@@ -222,7 +277,15 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
 
   const streamFor = (m: Member) => (m.id === you ? localStream : (m.stream && remoteStreams.get(m.stream.sessionId)) ?? null);
   const tile = (m: Member, kind: "big" | "thumb") => (
-    <VideoTile key={m.id} member={m} stream={streamFor(m)} isYou={m.id === you} big={kind === "big"} />
+    <VideoTile
+      key={m.id}
+      member={m}
+      stream={streamFor(m)}
+      isYou={m.id === you}
+      big={kind === "big"}
+      onSize={kind === "big" ? (w, h) => onTileSize(m.id, w, h) : undefined}
+      onVideoSize={(w, h) => onRemoteVideo(m, w, h)}
+    />
   );
 
   if (status.kind === "closed") {
@@ -395,10 +458,43 @@ function streamingKey(members: Member[]): string {
   return members.map((m) => `${m.id}:${m.stream?.sessionId}:${m.stream?.tracks.join(",")}`).join("|");
 }
 
-function VideoTile(props: { member: Member; stream: MediaStream | null; isYou: boolean; big?: boolean; paused?: boolean }) {
+function VideoTile(props: {
+  member: Member;
+  stream: MediaStream | null;
+  isYou: boolean;
+  big?: boolean;
+  paused?: boolean;
+  onSize?: (w: number, h: number) => void;
+  onVideoSize?: (w: number, h: number) => void;
+}) {
   const ref = useRef<HTMLVideoElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const [muted, setMuted] = useState(true);
+
+  // Latest callbacks without re-subscribing the observers on every render.
+  const callbacks = useRef(props);
+  callbacks.current = props;
+
+  useEffect(() => {
+    const box = boxRef.current;
+    if (!box || !props.onSize) return;
+    const ro = new ResizeObserver(([entry]) => {
+      const dpr = devicePixelRatio || 1;
+      const round = (v: number) => Math.round((v * dpr) / TILE_SIZE_STEP) * TILE_SIZE_STEP;
+      callbacks.current.onSize?.(round(entry.contentRect.width), round(entry.contentRect.height));
+    });
+    ro.observe(box);
+    return () => ro.disconnect();
+  }, [!!props.onSize]);
+
+  useEffect(() => {
+    if (!props.stream || props.isYou) return;
+    const id = setInterval(() => {
+      const v = ref.current;
+      if (v?.videoWidth) callbacks.current.onVideoSize?.(v.videoWidth, v.videoHeight);
+    }, 2000);
+    return () => clearInterval(id);
+  }, [props.stream, props.isYou]);
 
   // Detaching the stream while paused stops the element from compositing frames; the
   // track itself keeps feeding the encoder, so viewers are unaffected.

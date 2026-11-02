@@ -26,6 +26,11 @@ const TRACK_NAMES: readonly TrackName[] = ["video", "audio"];
 // Display-only label from the sharer, e.g. "1080p100" or "source60".
 const PRESET_PATTERN = /^(?:\d{3,4}p|source)\d{2,3}$/;
 const BROWSER_RIDS = [...RIDS];
+// Matches the publisher's sendEncodings: full, half, quarter.
+const BROWSER_SCALES = [1, 0.5, 0.25];
+
+// OBS spaces simulcast layers evenly: with 3 layers they are full, 2/3 and 1/3 size.
+const obsScales = (n: number) => Array.from({ length: n }, (_, i) => (n - i) / n);
 
 // OBS can vanish without sending DELETE (crash, network loss), so poll the SFU.
 const OBS_HEALTH_INTERVAL_MS = 30_000;
@@ -64,7 +69,7 @@ const obsMember = (s: ObsStream): Member => ({
   id: `obs-${s.resourceId}`,
   name: `${s.name} (OBS)`,
   joinedAt: s.startedAt,
-  stream: { sessionId: s.sessionId, tracks: s.tracks, preset: "obs", rids: s.rids },
+  stream: { sessionId: s.sessionId, tracks: s.tracks, preset: "obs", rids: s.rids, scales: obsScales(s.rids.length) },
   obs: true,
   obsKeyId: s.keyHash.slice(0, OBS_KEY_ID_LENGTH),
 });
@@ -303,7 +308,10 @@ export class Room extends DurableObject<Env> {
           .map((t) => t.trackName as TrackName);
         if (published.includes("video")) {
           const preset = PRESET_PATTERN.test(String(op.preset)) ? op.preset : "custom";
-          const updated = this.patch(ws, { stream: { sessionId, tracks: published, preset, rids: BROWSER_RIDS } });
+          const height = Number.isInteger(op.height) && op.height! >= 100 && op.height! <= 8640 ? op.height : undefined;
+          const updated = this.patch(ws, {
+            stream: { sessionId, tracks: published, preset, rids: BROWSER_RIDS, scales: BROWSER_SCALES, height },
+          });
           this.broadcast({ type: "update", member: toMember(updated) });
         }
         return res;

@@ -13,6 +13,10 @@ export type Stream = {
   preset: string;
   // Publisher's simulcast RIDs, best first. Missing or empty means a single layer.
   rids?: string[];
+  // Each layer's size as a fraction of the source, same order as rids.
+  scales?: number[];
+  // Source height in pixels when the publisher knows it (browser shares).
+  height?: number;
 };
 
 export type Member = {
@@ -32,7 +36,14 @@ export type PullTrack = { sessionId: string; trackName: TrackName; rid?: Rid; fi
 
 export type SfuOp =
   | { op: "newSession" }
-  | { op: "publish"; sessionId: string; sdp: string; tracks: { mid: string; trackName: TrackName }[]; preset: string }
+  | {
+      op: "publish";
+      sessionId: string;
+      sdp: string;
+      tracks: { mid: string; trackName: TrackName }[];
+      preset: string;
+      height?: number;
+    }
   | { op: "unpublish"; sessionId: string }
   | { op: "pull"; sessionId: string; tracks: PullTrack[] }
   | { op: "renegotiate"; sessionId: string; sdp: string }
