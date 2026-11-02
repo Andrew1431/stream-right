@@ -1,16 +1,34 @@
 import type { PullTrack, Rid, SfuResponse, Stream, TrackName } from "../shared/protocol";
 import type { RoomConnection } from "./connection";
 
+// height 0 means the source resolution, uncapped.
+export type ShareSettings = { height: number; fps: number };
+
 export const PRESETS = {
-  "720p30": { label: "720p 30fps", height: 720, fps: 30, bitrate: 2_500_000 },
-  "1080p60": { label: "1080p 60fps", height: 1080, fps: 60, bitrate: 6_000_000 },
-  "1440p60": { label: "1440p 60fps", height: 1440, fps: 60, bitrate: 10_000_000 },
-  "2160p60": { label: "4K 60fps", height: 2160, fps: 60, bitrate: 20_000_000 },
-  source: { label: "Source (no cap)", height: 0, fps: 60, bitrate: 20_000_000 },
-} as const;
+  "720p30": { height: 720, fps: 30 },
+  "1080p60": { height: 1080, fps: 60 },
+  "1440p60": { height: 1440, fps: 60 },
+  "2160p60": { height: 2160, fps: 60 },
+  source: { height: 0, fps: 60 },
+} satisfies Record<string, ShareSettings>;
 export type PresetId = keyof typeof PRESETS;
 
+export const HEIGHT_CHOICES = [720, 1080, 1440, 2160, 0];
+export const FPS_CHOICES = [30, 60, 90, 100, 120, 144, 165, 240];
+
+export function heightLabel(height: number): string {
+  if (!height) return "Source";
+  return height === 2160 ? "4K" : `${height}p`;
+}
+
+export const settingsLabel = (s: ShareSettings) => `${heightLabel(s.height)} ${s.fps}fps`;
+
+// Compact id the room shows to others, e.g. "1080p100" or "source60".
+export const settingsId = (s: ShareSettings) => (s.height ? `${s.height}p${s.fps}` : `source${s.fps}`);
+
 const MAX_BITRATE = 30_000_000;
+const REFERENCE_BITRATE = 6_000_000; // 1080p60 16:9
+const REFERENCE_PIXELS = 1920 * 1080;
 const ICE_SERVERS: RTCIceServer[] = [{ urls: "stun:stun.cloudflare.com:3478" }];
 const ICE_GATHER_TIMEOUT_MS = 2_000;
 const CONNECT_TIMEOUT_MS = 15_000;
@@ -54,12 +72,13 @@ function waitConnected(pc: RTCPeerConnection): Promise<void> {
   });
 }
 
-// Preset bitrates assume 16:9; ultrawide captures carry more pixels at the same height.
-function scaledBitrate(preset: (typeof PRESETS)[PresetId], video: MediaStreamTrack): number {
-  const { width = 0, height = 0 } = video.getSettings();
-  if (!width || !height || !preset.height) return preset.bitrate;
-  const aspect = width / height;
-  return Math.round(Math.min(MAX_BITRATE, preset.bitrate * Math.max(1, aspect / (16 / 9))));
+// Scale from 6 Mbps at 1080p60 by the real capture size and the requested frame rate.
+// Sub-linear exponents: bigger frames and higher rates compress better per pixel and per frame.
+function bitrateFor(settings: ShareSettings, video: MediaStreamTrack): number {
+  const { width = 1920, height = 1080 } = video.getSettings();
+  const pixels = (width * height) / REFERENCE_PIXELS;
+  const bitrate = REFERENCE_BITRATE * pixels ** 0.8 * (settings.fps / 60) ** 0.6;
+  return Math.round(Math.min(MAX_BITRATE, Math.max(1_000_000, bitrate)));
 }
 
 // H.264 usually has a hardware encoder (NVENC, Quick Sync, AMF), which keeps up at
@@ -89,12 +108,11 @@ export class Publisher {
     private onEnded: () => void,
   ) {}
 
-  async start(presetId: PresetId): Promise<MediaStream> {
-    const preset = PRESETS[presetId];
+  async start(settings: ShareSettings): Promise<MediaStream> {
     const options = {
       video: {
-        frameRate: { ideal: preset.fps, max: preset.fps },
-        ...(preset.height ? { height: { max: preset.height } } : {}),
+        frameRate: { ideal: settings.fps, max: settings.fps },
+        ...(settings.height ? { height: { max: settings.height } } : {}),
       },
       audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
       // Chrome-only hints; other browsers ignore them.
@@ -118,12 +136,12 @@ export class Publisher {
       this.pc = pc;
       const tracks: { mid: string; trackName: TrackName }[] = [];
 
-      const bitrate = scaledBitrate(preset, video);
+      const bitrate = bitrateFor(settings, video);
       const vt = pc.addTransceiver(video, {
         direction: "sendonly",
         sendEncodings: [
-          { rid: "f", maxBitrate: bitrate, maxFramerate: preset.fps },
-          { rid: "h", scaleResolutionDownBy: 2, maxBitrate: Math.round(bitrate / 4), maxFramerate: preset.fps },
+          { rid: "f", maxBitrate: bitrate, maxFramerate: settings.fps },
+          { rid: "h", scaleResolutionDownBy: 2, maxBitrate: Math.round(bitrate / 4), maxFramerate: Math.min(settings.fps, 60) },
           { rid: "q", scaleResolutionDownBy: 4, maxBitrate: Math.max(200_000, Math.round(bitrate / 16)), maxFramerate: 30 },
         ],
       });
@@ -142,7 +160,7 @@ export class Publisher {
         sessionId: this.sessionId,
         sdp: pc.localDescription!.sdp,
         tracks,
-        preset: presetId,
+        preset: settingsId(settings),
       });
       checkTracks(res);
       await pc.setRemoteDescription(res.sessionDescription!);

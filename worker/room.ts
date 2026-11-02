@@ -21,7 +21,8 @@ const MAX_MESSAGE_BYTES = 128 * 1024;
 const MAX_SESSIONS_PER_MEMBER = 8;
 const MAX_PULL_TRACKS = 32;
 const TRACK_NAMES: readonly TrackName[] = ["video", "audio"];
-const PRESETS = ["720p30", "1080p60", "1440p60", "2160p60", "source"];
+// Display-only label from the sharer, e.g. "1080p100" or "source60".
+const PRESET_PATTERN = /^(?:\d{3,4}p|source)\d{2,3}$/;
 
 type Authed = { authed: true; clientId: string; sessions: string[] } & Member;
 type Attachment = { authed: false; connectedAt: number } | Authed;
@@ -161,7 +162,7 @@ export class Room extends DurableObject<Env> {
           .map((t) => t.trackName as TrackName);
         if (published.includes("video")) {
           const updated = this.patch(ws, {
-            stream: { sessionId, tracks: published, preset: PRESETS.includes(op.preset) ? op.preset : "source" },
+            stream: { sessionId, tracks: published, preset: PRESET_PATTERN.test(String(op.preset)) ? op.preset : "custom" },
           });
           this.broadcast({ type: "update", member: toMember(updated) });
         }

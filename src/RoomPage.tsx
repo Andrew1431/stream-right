@@ -1,12 +1,24 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
 import { MAX_NAME_LENGTH, type Member, type Rid, type Stream } from "../shared/protocol";
 import { RoomConnection, type RoomStatus } from "./connection";
-import { PRESETS, Publisher, Subscriber, type Layer, type PresetId } from "./media";
+import {
+  FPS_CHOICES,
+  HEIGHT_CHOICES,
+  heightLabel,
+  PRESETS,
+  Publisher,
+  settingsLabel,
+  Subscriber,
+  type Layer,
+  type PresetId,
+  type ShareSettings,
+} from "./media";
 import { load, save } from "./storage";
 
 const NAME_STORE = "displayName";
 const PRESET_STORE = "sharePreset";
 const LAYOUT_STORE = "layout";
+const CUSTOM_STORE = "customShare";
 
 type Quality = "auto" | Rid;
 type LayoutMode = "focus" | "split";
@@ -89,10 +101,14 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
   const [viewError, setViewError] = useState("");
 
   // Publishing
-  const [preset, setPreset] = useState<PresetId>(() => {
+  const [preset, setPreset] = useState<PresetId | "custom">(() => {
     const p = load<string>(PRESET_STORE, "1080p60");
-    return p in PRESETS ? (p as PresetId) : "1080p60";
+    return p === "custom" || p in PRESETS ? (p as PresetId | "custom") : "1080p60";
   });
+  const [custom, setCustom] = useState<ShareSettings>(() => load(CUSTOM_STORE, { height: 1080, fps: 120 }));
+  const settings = preset === "custom" ? custom : PRESETS[preset];
+  // What the browser actually delivers, which can be lower than requested.
+  const [captured, setCaptured] = useState("");
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [starting, setStarting] = useState(false);
   const publisher = useMemo(() => new Publisher(conn, () => setLocalStream(null)), [conn]);
@@ -150,7 +166,10 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
     setError("");
     setStarting(true);
     try {
-      setLocalStream(await publisher.start(preset));
+      const media = await publisher.start(settings);
+      const s = media.getVideoTracks()[0]?.getSettings() ?? {};
+      setCaptured(s.width && s.height ? `${s.width}×${s.height} @ ${Math.round(s.frameRate ?? settings.fps)}fps` : "");
+      setLocalStream(media);
     } catch (e) {
       const err = e as Error;
       if (err.name !== "NotAllowedError") setError(err.message);
@@ -162,6 +181,11 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
   function stopShare() {
     publisher.stop();
     setLocalStream(null);
+  }
+
+  function updateCustom(next: ShareSettings) {
+    setCustom(next);
+    save(CUSTOM_STORE, next);
   }
 
   function changeLayout(next: LayoutMode) {
@@ -222,21 +246,44 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
           )}
           {localStream ? (
             <button type="button" className="danger" onClick={stopShare}>
-              Stop sharing ({PRESETS[preset].label})
+              Stop sharing ({captured || settingsLabel(settings)})
             </button>
           ) : (
             <>
               <select
                 value={preset}
                 onChange={(e) => {
-                  setPreset(e.target.value as PresetId);
+                  setPreset(e.target.value as PresetId | "custom");
                   save(PRESET_STORE, e.target.value);
                 }}
               >
                 {Object.entries(PRESETS).map(([id, p]) => (
-                  <option key={id} value={id}>{p.label}</option>
+                  <option key={id} value={id}>{p.height ? settingsLabel(p) : "Source (no cap)"}</option>
                 ))}
+                <option value="custom">Custom…</option>
               </select>
+              {preset === "custom" && (
+                <>
+                  <select
+                    aria-label="Resolution"
+                    value={custom.height}
+                    onChange={(e) => updateCustom({ ...custom, height: Number(e.target.value) })}
+                  >
+                    {HEIGHT_CHOICES.map((h) => (
+                      <option key={h} value={h}>{heightLabel(h)}</option>
+                    ))}
+                  </select>
+                  <select
+                    aria-label="Frame rate"
+                    value={custom.fps}
+                    onChange={(e) => updateCustom({ ...custom, fps: Number(e.target.value) })}
+                  >
+                    {FPS_CHOICES.map((f) => (
+                      <option key={f} value={f}>{f}fps</option>
+                    ))}
+                  </select>
+                </>
+              )}
               <button type="button" disabled={status.kind !== "connected" || starting} onClick={startShare}>
                 {starting ? "Starting…" : "Share screen"}
               </button>
