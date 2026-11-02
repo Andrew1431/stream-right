@@ -160,7 +160,11 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
   const streaming = members.filter((m) => m.stream);
   // Your own streams (browser share and OBS) stay in a small corner preview: showing them full
   // size recaptures your screen in a feedback loop, and pulling your own OBS stream costs bandwidth.
-  const isMine = (m: Member) => m.id === you || (!!m.obs && !!myObsKeyId && m.obsKeyId === myObsKeyId);
+  // OBS streams match by token fingerprint, or by name when this browser no longer has the
+  // token (incognito, cleared storage, another device): "<your name> (OBS)".
+  const isMine = (m: Member) =>
+    m.id === you ||
+    (!!m.obs && ((!!myObsKeyId && m.obsKeyId === myObsKeyId) || m.name === `${props.name} (OBS)`));
   const watching = streaming.filter((m) => !isMine(m));
   const myObs = streaming.find((m) => m.obs && isMine(m)) ?? null;
   const focused = watching.find((m) => m.id === focusId) ?? watching[0] ?? null;
