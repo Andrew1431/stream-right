@@ -17,6 +17,8 @@ export type Stream = {
   scales?: number[];
   // Source height in pixels when the publisher knows it (browser shares).
   height?: number;
+  // The streamer asked that nobody keeps clips of this stream.
+  noClips?: boolean;
 };
 
 export type Member = {
@@ -28,7 +30,12 @@ export type Member = {
   obs?: boolean;
   // First 16 hex chars of SHA-256(OBS token); lets the token holder recognise their stream.
   obsKeyId?: string;
+  // Keeping a rolling clip buffer of the streams they watch, shown to everyone.
+  buffering?: boolean;
 };
+
+export const CLIP_MIN_SECONDS = 30;
+export const CLIP_MAX_SECONDS = 120;
 
 export type SessionDescription = { type: "offer" | "answer"; sdp: string };
 
@@ -43,13 +50,22 @@ export type SfuOp =
       tracks: { mid: string; trackName: TrackName }[];
       preset: string;
       height?: number;
+      noClips?: boolean;
     }
   | { op: "unpublish"; sessionId: string }
   | { op: "pull"; sessionId: string; tracks: PullTrack[] }
   | { op: "renegotiate"; sessionId: string; sdp: string }
   | { op: "setLayer"; sessionId: string; mid: string; track: PullTrack & { rid: Rid } }
   | { op: "close"; sessionId: string; mids: string[]; sdp?: string }
-  | { op: "obsKey" };
+  | { op: "obsKey"; noClips?: boolean }
+  // Room ops share the request/reply channel so the client hears about rejections.
+  // Owner only: the room's owner key or the server's creator key.
+  | { op: "allowClips"; allowed: boolean; ownerKey?: string; creatorKey?: string }
+  | { op: "buffering"; on: boolean }
+  // Announces a saved clip; `of` is the member ids whose streams were clipped.
+  | { op: "clip"; seconds: number; of: string[] }
+  // Streamer's opt-out, for their browser share and, with its key, their OBS stream.
+  | { op: "clipPrefs"; noClips: boolean; obsKey?: string };
 
 export type ClientMessage =
   | { type: "hello"; token: string; name: string; clientId: string }
@@ -77,7 +93,9 @@ export type SfuResponse = {
 };
 
 export type ServerMessage =
-  | { type: "welcome"; you: string; members: Member[] }
+  | { type: "welcome"; you: string; members: Member[]; clipsAllowed: boolean }
+  | { type: "clips"; allowed: boolean }
+  | { type: "clip"; by: string; name: string; seconds: number; of: string[] }
   | { type: "join"; member: Member }
   | { type: "update"; member: Member }
   | { type: "leave"; id: string }

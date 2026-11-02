@@ -13,7 +13,7 @@ Send friends a link. Everyone in the room can share a screen, a game window or a
 - **Browser or OBS.** Share straight from the browser, or stream from OBS over WHIP with hardware encoding, game audio only, and no Chrome capture throttling.
 - **Invite links are the keys.** The room token lives in the link's `#fragment`, so it never reaches server logs. Rotate a link to kick everyone and revoke it.
 - **No accounts.** Type a name and you're in.
-- **Nothing is recorded.** Video goes from the streamer through Cloudflare's relay straight to viewers and is never stored on your server or Cloudflare's.
+- **Nothing is recorded.** Video goes from the streamer through Cloudflare's relay straight to viewers and is never stored on your server or Cloudflare's. If a room's owner turns on [clips](#clips), viewers can save the last minute or two to their own device, and everyone in the room is told.
 
 ## What it costs
 
@@ -173,6 +173,24 @@ Browser sharing works anywhere, but Chrome throttles capture when the game has f
 **Keep voice chat out of the stream:** in **Settings → Audio**, set **Desktop Audio** to Disabled, then add an **Application Audio Capture** source for the game (Windows 10 2004+). Discord and music stay off the stream without extra software.
 
 Each person gets their own token from their room's OBS panel. A token stops working when the room's link is rotated; **Make a new token** in the panel replaces just yours.
+
+## Clips
+
+Clips let someone save the last 30 to 120 seconds of what they were watching as an MP4, like an instant replay. They're built so that nobody is ever recorded without knowing it.
+
+- **Off by default.** The room's owner turns them on with **Clips off → Allow clips in this room**. The owner is the browser that made the room (it keeps the room's owner key) or anyone with the creator key. The server rejects the setting from anyone else.
+- **Everyone can see it.** While clips are on, the top bar shows a **Clips on** badge, and people get a one-time notice when they join or when clips are switched on.
+- **You can see who's buffering.** Viewers opt in to keeping a buffer, and a dot appears next to their name in the people list while they do.
+- **Every clip is announced.** Saving a clip tells the whole room, e.g. "Maya clipped the last 60s (Jonah, Priya)", with a short shutter sound. You can mute the sound, but the notice always shows. The room sends the announcement before the file is made, so a clip the room didn't announce isn't saved.
+- **Streamers can opt out.** **Don't allow clips of my stream** (in the clips panel or the notice) keeps everyone's buffer off your stream, and your tile shows "No clips". It also covers your OBS stream when you set it in the browser that holds your OBS token.
+
+**How it works.** Nothing extra is uploaded and the server stores no media. Each viewer's browser keeps a copy of the H.264 video and Opus audio it already receives, using WebRTC encoded transforms in a background worker, and saves it as an MP4 without re-encoding. One file is saved per stream, named like `jonah-friday-night-21-04-37.mp4`. It needs Chrome, Edge, Firefox or Safari; streams sent as VP8 (browsers without H.264) can't be clipped. Starting a buffer briefly reconnects the streams you're watching.
+
+**Memory.** The buffer lives in memory: roughly 45 MB a minute for a 1080p60 stream at full quality, times the number of streams you watch. The clips panel shows how much each buffer holds and warns above about 500 MB.
+
+**It's what you received.** A clip is the copy your browser was getting, so a stream you had as a thumbnail is clipped at thumbnail size, and a tab that was hidden long enough to drop to audio only has no video for that stretch. Watch a stream large at High quality for the best clip. When the quality changes mid-buffer, the clip starts at the change.
+
+**This isn't DRM.** The app enforces these rules for itself. Anyone can still record their screen with other software, and a modified browser could skip the announcements. Clips make the honest path visible; they can't stop a determined person from recording.
 
 ## Troubleshooting
 

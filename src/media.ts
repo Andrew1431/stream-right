@@ -1,4 +1,5 @@
 import type { PullTrack, Rid, SfuResponse, Stream, TrackName } from "../shared/protocol";
+import { needsInsertableStreams, type Clipper } from "./clips/clipper";
 import type { RoomConnection } from "./connection";
 
 // height 0 means the source resolution, uncapped.
@@ -33,8 +34,13 @@ const ICE_SERVERS: RTCIceServer[] = [{ urls: "stun:stun.cloudflare.com:3478" }];
 const ICE_GATHER_TIMEOUT_MS = 2_000;
 const CONNECT_TIMEOUT_MS = 15_000;
 
-function newPeerConnection() {
-  return new RTCPeerConnection({ iceServers: ICE_SERVERS, bundlePolicy: "max-bundle" });
+// `insertable` is Chrome's flag for createEncodedStreams, only set while clips need it.
+function newPeerConnection(insertable = false) {
+  return new RTCPeerConnection({
+    iceServers: ICE_SERVERS,
+    bundlePolicy: "max-bundle",
+    ...(insertable ? { encodedInsertableStreams: true } : {}),
+  } as RTCConfiguration);
 }
 
 // The SFU wants the full candidate list in the SDP; stop waiting after a short bound.
@@ -108,7 +114,7 @@ export class Publisher {
     private onEnded: () => void,
   ) {}
 
-  async start(settings: ShareSettings): Promise<MediaStream> {
+  async start(settings: ShareSettings, noClips = false): Promise<MediaStream> {
     const options = {
       video: {
         frameRate: { ideal: settings.fps, max: settings.fps },
@@ -162,6 +168,7 @@ export class Publisher {
         tracks,
         preset: settingsId(settings),
         height: video.getSettings().height,
+        noClips,
       });
       checkTracks(res);
       await pc.setRemoteDescription(res.sessionDescription!);
@@ -201,11 +208,15 @@ export class Subscriber {
   private midToKey = new Map<string, string>();
   private queue: Promise<void> = Promise.resolve();
   private closed = false;
+  // Whether this PeerConnection's receivers go through the clip worker. Fixed per connection.
+  private clipping = false;
+  private lastWant = new Map<Stream, Layer | null>();
 
   constructor(
     private conn: RoomConnection,
     private onChange: () => void,
     private onError: (e: Error | null) => void,
+    private clipper: Clipper | null = null,
   ) {
     this.reset(false);
   }
@@ -213,6 +224,7 @@ export class Subscriber {
   // Bring pulled tracks in line with `want` (publisher stream → preferred video layer).
   // A null layer pulls audio only (used while the tab is hidden).
   sync(want: Map<Stream, Layer | null>) {
+    this.lastWant = want;
     this.queue = this.queue
       .then(() => this.apply(want))
       .then(() => this.onError(null))
@@ -226,6 +238,22 @@ export class Subscriber {
         } catch (e2) {
           if (!this.closed) this.onError(e2 instanceof Error ? e2 : new Error(String(e ?? e2)));
         }
+      });
+  }
+
+  // Call after the clipper's keys change. Transforms only take effect on receivers made after
+  // them, so starting to buffer means pulling everything again on a new PeerConnection. Turning
+  // clips off leaves this one alone: the worker just passes frames through until the next reset.
+  updateClips() {
+    if (!this.clipper?.keys.size || this.clipping) return;
+    this.queue = this.queue
+      .then(() => {
+        if (this.closed || this.clipping) return;
+        this.reset();
+        return this.apply(this.lastWant);
+      })
+      .catch((e) => {
+        if (!this.closed) this.onError(e instanceof Error ? e : new Error(String(e)));
       });
   }
 
@@ -247,7 +275,8 @@ export class Subscriber {
   // Fresh PeerConnection and SFU session. The old session is abandoned and expires on its own.
   private reset(notify = true) {
     this.pc?.close();
-    this.pc = newPeerConnection();
+    this.clipping = !!this.clipper?.keys.size;
+    this.pc = newPeerConnection(this.clipping && needsInsertableStreams);
     this.sessionId = null;
     this.pulled.clear();
     this.midToKey.clear();
@@ -262,6 +291,7 @@ export class Subscriber {
       const publisher = key.split(":")[0];
       const existing = this.streams.get(publisher)?.getTracks() ?? [];
       this.streams.set(publisher, new MediaStream([...existing.filter((t) => t.kind !== e.track.kind), e.track]));
+      if (this.clipping) this.clipper!.attach(e.receiver, publisher, e.track.kind as TrackName, needsInsertableStreams);
       this.onChange();
     });
   }

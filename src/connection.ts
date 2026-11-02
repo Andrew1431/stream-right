@@ -19,7 +19,10 @@ export type RoomSnapshot = {
   you: string | null;
   // Bumps on every successful (re)join; SFU sessions don't survive a reconnect.
   epoch: number;
+  clipsAllowed: boolean;
 };
+
+export type ClipEvent = Extract<ServerMessage, { type: "clip" }>;
 
 const FINAL_REASONS: Record<number, string> = {
   [CloseCode.BadToken]: "This invite link isn't valid. Ask for a new one.",
@@ -49,7 +52,7 @@ const REQUEST_TIMEOUT_MS = 15_000;
 type Pending = { resolve: (r: SfuResponse) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> };
 
 export class RoomConnection {
-  snapshot: RoomSnapshot = { status: { kind: "connecting" }, members: [], you: null, epoch: 0 };
+  snapshot: RoomSnapshot = { status: { kind: "connecting" }, members: [], you: null, epoch: 0, clipsAllowed: false };
 
   private ws: WebSocket | null = null;
   private attempt = 0;
@@ -58,6 +61,7 @@ export class RoomConnection {
   private nextId = 1;
   private pending = new Map<number, Pending>();
   private listeners = new Set<() => void>();
+  private clipListeners = new Set<(e: ClipEvent) => void>();
 
   constructor(
     private roomId: string,
@@ -71,6 +75,13 @@ export class RoomConnection {
   };
 
   getSnapshot = () => this.snapshot;
+
+  onClip = (fn: (e: ClipEvent) => void) => {
+    this.clipListeners.add(fn);
+    return () => {
+      this.clipListeners.delete(fn);
+    };
+  };
 
   // Leave right away on navigation instead of waiting for the server to notice.
   private onPageHide = () => this.ws?.close(1000);
@@ -156,7 +167,14 @@ export class RoomConnection {
           you: msg.you,
           members: msg.members,
           epoch: this.snapshot.epoch + 1,
+          clipsAllowed: msg.clipsAllowed === true,
         });
+        break;
+      case "clips":
+        this.set({ clipsAllowed: msg.allowed });
+        break;
+      case "clip":
+        for (const fn of this.clipListeners) fn(msg);
         break;
       case "join":
       case "update":

@@ -19,6 +19,8 @@ export function ObsPanel(props: {
   roomId: string;
   connected: boolean;
   obsKey: string;
+  // The streamer's clip opt-out, carried by the key into their OBS stream.
+  noClips: boolean;
   onKey: (key: string) => void;
   onClose: () => void;
 }) {
@@ -30,7 +32,7 @@ export function ObsPanel(props: {
   async function newKey() {
     setError("");
     try {
-      const res = await props.conn.request({ op: "obsKey" });
+      const res = await props.conn.request({ op: "obsKey", noClips: props.noClips });
       if (!res.obsKey) throw new Error("No key returned");
       save(keyStore(props.roomId), res.obsKey);
       props.onKey(res.obsKey);
