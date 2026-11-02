@@ -13,6 +13,7 @@ Send friends a link. Everyone in the room can share a screen, a game window or a
 - **Browser or OBS.** Share straight from the browser, or stream from OBS over WHIP with hardware encoding, game audio only, and no Chrome capture throttling.
 - **Invite links are the keys.** The room token lives in the link's `#fragment`, so it never reaches server logs. Rotate a link to kick everyone and revoke it.
 - **No accounts.** Type a name and you're in.
+- **Nothing is recorded.** Video goes from the streamer through Cloudflare's relay straight to viewers and is never stored on your server or Cloudflare's.
 
 ## What it costs
 
