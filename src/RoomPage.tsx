@@ -17,6 +17,7 @@ import {
 } from "./media";
 import { loadObsKey, ObsPanel, obsKeyId } from "./ObsPanel";
 import { SelfPreview, useHiddenFor, usePageActive } from "./SelfPreview";
+import { rememberRoom } from "./recent";
 import { load, save } from "./storage";
 import { UsagePanel, useUsage } from "./UsagePanel";
 
@@ -77,6 +78,7 @@ export function RoomPage({ roomId }: { roomId: string }) {
       <main className="page">
         <h1>{roomId}</h1>
         <p className="error">This link is missing its invite code. Ask whoever shared it for the full link.</p>
+        <a className="link" href="/">Back to your rooms</a>
       </main>
     );
   }
@@ -129,6 +131,9 @@ function useConnection(roomId: string, token: string, name: string) {
 
 function Room(props: { roomId: string; token: string; name: string; onRename: () => void }) {
   const { conn, status, members, you, epoch, clipsAllowed } = useConnection(props.roomId, props.token, props.name);
+  useEffect(() => {
+    if (status.kind === "connected") rememberRoom(props.roomId, props.token);
+  }, [status.kind, props.roomId, props.token]);
   const [error, setError] = useState("");
   const [viewError, setViewError] = useState("");
 
@@ -439,6 +444,7 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
       <main className="page">
         <h1>{props.roomId}</h1>
         <p className="error">{status.reason}</p>
+        <a className="link" href="/">Back to your rooms</a>
       </main>
     );
   }
@@ -447,6 +453,7 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
     <main className="room">
       <header className="topbar">
         <div className="row">
+          <a className="home-link" href="/" title="All rooms">stream</a>
           <strong className="room-name">{props.roomId}</strong>
           <StatusBadge status={status} />
           {clipsAllowed && (

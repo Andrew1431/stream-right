@@ -112,6 +112,9 @@ export const CloseCode = {
   Replaced: 4009,
 } as const;
 
+// Whether a saved invite link still works, and who's in the room (for the home page's recent rooms).
+export type RoomPeek = { ok: false } | { ok: true; people: number; live: number };
+
 // Realtime data sent to viewers this calendar month (UTC), for whoever holds the creator key.
 export type UsageResponse =
   | { configured: false }
