@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import type { RoomConnection } from "./connection";
-import { load, save } from "./storage";
+import { load, remove, save } from "./storage";
 
 const keyStore = (roomId: string) => `obsKey:${roomId}`;
 
 export const loadObsKey = (roomId: string) => load(keyStore(roomId), "");
+export const forgetObsKey = (roomId: string) => remove(keyStore(roomId));
 
 // SHA-256 prefix the server shows on OBS members, so we can tell which OBS stream is ours.
 export async function obsKeyId(key: string): Promise<string> {

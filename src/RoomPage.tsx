@@ -15,7 +15,7 @@ import {
   type PresetId,
   type ShareSettings,
 } from "./media";
-import { loadObsKey, ObsPanel, obsKeyId } from "./ObsPanel";
+import { forgetObsKey, loadObsKey, ObsPanel, obsKeyId } from "./ObsPanel";
 import { SelfPreview, useHiddenFor, usePageActive } from "./SelfPreview";
 import { rememberRoom } from "./recent";
 import { load, save } from "./storage";
@@ -366,6 +366,17 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
     }
   }
 
+  async function revokeAllObs() {
+    if (!confirm("Revoke every OBS token in this room? All OBS streams here leave the room, and everyone needs a new token to stream from OBS.")) return;
+    try {
+      await conn.request({ op: "revokeObs", ownerKey: ownerKey || undefined, creatorKey: creatorKey || undefined });
+      forgetObsKey(props.roomId);
+      setObsKey("");
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
   function changeNoClips(v: boolean) {
     setNoClips(v);
     save(NO_CLIPS_STORE, v);
@@ -628,6 +639,9 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
                     : []),
                   { label: "Stream from OBS", hint: myObs ? "You're live" : "Server and token", onSelect: () => setShowObs(true) },
                   { label: "Change your name", hint: me?.name ?? props.name, onSelect: props.onRename },
+                  ...(isOwner
+                    ? [{ label: "Revoke all OBS tokens", hint: "Ends every OBS stream in this room", onSelect: revokeAllObs }]
+                    : []),
                 ]}
               />
             )}

@@ -67,7 +67,9 @@ export type SfuOp =
   // Streamer's opt-out, for their browser share and, with its key, their OBS stream.
   | { op: "clipPrefs"; noClips: boolean; obsKey?: string }
   // Puts your current name on the OBS stream made with this token.
-  | { op: "claimObs"; obsKey: string };
+  | { op: "claimObs"; obsKey: string }
+  // Owner only: every OBS token in the room stops working and their streams leave.
+  | { op: "revokeObs"; ownerKey?: string; creatorKey?: string };
 
 export type ClientMessage =
   | { type: "hello"; token: string; name: string; clientId: string }

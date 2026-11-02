@@ -423,12 +423,13 @@ export class Room extends DurableObject<Env> {
       }
 
       case "obsKey": {
-        // A new token replaces this browser's old ones (and the one it says it held): they stop
-        // working and any stream using them leaves the room.
+        // A new token replaces this browser's old ones, the one it says it held, and tokens from
+        // before tokens recorded their browser that carry this name. They stop working and any
+        // stream using them leaves the room.
         const replaced = isStr(op.replaces) ? await sha256Hex(op.replaces) : null;
         const records = await this.ctx.storage.list<ObsKeyRecord>({ prefix: OBS_KEY_PREFIX });
         const revoked = [...records]
-          .filter(([key, r]) => r.clientId === me.clientId || key === OBS_KEY_PREFIX + replaced)
+          .filter(([key, r]) => r.clientId === me.clientId || key === OBS_KEY_PREFIX + replaced || (!r.clientId && r.name === me.name))
           .map(([key]) => key);
         if (revoked.length) {
           await this.ctx.storage.delete(revoked);
@@ -445,6 +446,14 @@ export class Room extends DurableObject<Env> {
           clientId: me.clientId,
         } satisfies ObsKeyRecord);
         return { obsKey: key };
+      }
+
+      case "revokeObs": {
+        if (!(await this.isOwner(op))) throw new BadRequest("Only the room's owner can revoke OBS tokens");
+        const keys = await this.ctx.storage.list({ prefix: OBS_KEY_PREFIX });
+        await this.ctx.storage.delete([...keys.keys()]);
+        for (const s of [...this.obs.values()]) await this.endObs(s);
+        return {};
       }
 
       case "allowClips": {
