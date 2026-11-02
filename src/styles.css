@@ -354,3 +354,13 @@ button.thumb {
 button.thumb:hover {
   outline: 2px solid var(--accent);
 }
+
+.self-preview {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  width: 240px;
+  z-index: 10;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.5);
+  border-radius: 8px;
+}

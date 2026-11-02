@@ -123,10 +123,13 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
   }, [conn, epoch, status.kind === "connected"]);
 
   const streaming = members.filter((m) => m.stream);
-  const focused =
-    streaming.find((m) => m.id === focusId) ?? streaming.find((m) => m.id !== you) ?? streaming[0] ?? null;
-  const split = layout === "split" && streaming.length > 1;
-  const remoteCount = streaming.filter((m) => m.id !== you).length;
+  // Your own share stays in a small corner preview: showing it full size while sharing the
+  // whole screen recaptures itself in a feedback loop (and wastes GPU).
+  const watching = streaming.filter((m) => m.id !== you);
+  const focused = watching.find((m) => m.id === focusId) ?? watching[0] ?? null;
+  const split = layout === "split" && watching.length > 1;
+  const remoteCount = watching.length;
+  const me = members.find((m) => m.id === you);
 
   // Big tiles get the chosen quality; Auto prefers the top layer but lets the SFU step down.
   // In split view with 3+ streams each tile is small, so Auto starts at the medium layer.
@@ -207,7 +210,7 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
               ))}
             </div>
           )}
-          {streaming.length > 1 && (
+          {watching.length > 1 && (
             <div className="segmented">
               <button type="button" className={layout === "focus" ? "active" : ""} onClick={() => changeLayout("focus")}>
                 Focus
@@ -244,18 +247,22 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
 
       {(error || viewError) && <p className="error banner">{error || viewError}</p>}
 
-      {streaming.length === 0 ? (
-        <div className="stage empty muted">Nobody is sharing yet. Click Share screen to start.</div>
+      {localStream && me && <div className="self-preview">{tile(me, "thumb")}</div>}
+
+      {watching.length === 0 ? (
+        <div className="stage empty muted">
+          {localStream ? "You're sharing. Nobody else is sharing yet." : "Nobody is sharing yet. Click Share screen to start."}
+        </div>
       ) : split ? (
-        <div className="stage split" style={splitGrid(streaming.length)}>
-          {streaming.map((m) => tile(m, "big"))}
+        <div className="stage split" style={splitGrid(watching.length)}>
+          {watching.map((m) => tile(m, "big"))}
         </div>
       ) : (
-        <div className={streaming.length > 1 ? "stage focus with-thumbs" : "stage focus"}>
+        <div className={watching.length > 1 ? "stage focus with-thumbs" : "stage focus"}>
           {focused && tile(focused, "big")}
-          {streaming.length > 1 && (
+          {watching.length > 1 && (
             <div className="thumbs">
-              {streaming
+              {watching
                 .filter((m) => m.id !== focused?.id)
                 .map((m) => (
                   <button key={m.id} type="button" className="thumb" onClick={() => setFocusId(m.id)} title="Watch this stream">
