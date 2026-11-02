@@ -79,6 +79,7 @@ function useConnection(roomId: string, token: string, name: string) {
 function Room(props: { roomId: string; token: string; name: string; onRename: () => void }) {
   const { conn, status, members, you, epoch } = useConnection(props.roomId, props.token, props.name);
   const [error, setError] = useState("");
+  const [viewError, setViewError] = useState("");
 
   // Publishing
   const [preset, setPreset] = useState<PresetId>(() => {
@@ -101,7 +102,7 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
     const sub = new Subscriber(
       conn,
       () => setRemoteStreams(new Map(sub.streams)),
-      (e) => setError(e.message),
+      (e) => setViewError(e?.message ?? ""),
     );
     setSubscriber(sub);
     return () => {
@@ -188,6 +189,7 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
           </section>
 
           {error && <p className="error">{error}</p>}
+          {viewError && <p className="error">{viewError}</p>}
 
           {focused && (
             <section className="stage">

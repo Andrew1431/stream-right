@@ -17,7 +17,8 @@ import { sfu, SfuError } from "./sfu";
 const HELLO_TIMEOUT_MS = 5_000;
 const MAX_HELLO_BYTES = 4_096;
 const MAX_MESSAGE_BYTES = 128 * 1024;
-const MAX_SESSIONS_PER_MEMBER = 4;
+// Oldest sessions roll off; the subscriber makes a new one each time it resets.
+const MAX_SESSIONS_PER_MEMBER = 8;
 const MAX_PULL_TRACKS = 32;
 const TRACK_NAMES: readonly TrackName[] = ["video", "audio"];
 const PRESETS = ["720p30", "1080p60", "1440p60", "source"];
@@ -134,12 +135,11 @@ export class Room extends DurableObject<Env> {
 
     switch (op.op) {
       case "newSession": {
-        if (me.sessions.length >= MAX_SESSIONS_PER_MEMBER) throw new BadRequest("Too many sessions");
         const res = await sfu(this.env, "POST", "/sessions/new");
         if (!res.sessionId) throw new SfuError("SFU did not return a session");
         // Re-read: other messages may have updated the attachment while we awaited.
         const { sessions } = ws.deserializeAttachment() as Authed;
-        this.patch(ws, { sessions: [...sessions, res.sessionId] });
+        this.patch(ws, { sessions: [...sessions, res.sessionId].slice(-MAX_SESSIONS_PER_MEMBER) });
         return { sessionId: res.sessionId };
       }
 

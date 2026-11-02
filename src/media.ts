@@ -149,7 +149,7 @@ const keyOf = (t: { sessionId: string; trackName: TrackName }) => `${t.sessionId
 // on its session are serialized through `queue`.
 export class Subscriber {
   streams = new Map<string, MediaStream>();
-  private pc = newPeerConnection();
+  private pc!: RTCPeerConnection;
   private sessionId: string | null = null;
   private pulled = new Map<string, Pulled>();
   private midToKey = new Map<string, string>();
@@ -159,9 +159,48 @@ export class Subscriber {
   constructor(
     private conn: RoomConnection,
     private onChange: () => void,
-    private onError: (e: Error) => void,
+    private onError: (e: Error | null) => void,
   ) {
-    this.pc.addEventListener("track", (e) => {
+    this.reset(false);
+  }
+
+  // Bring pulled tracks in line with `want` (publisher stream → preferred video layer).
+  sync(want: Map<Stream, Rid>) {
+    this.queue = this.queue
+      .then(() => this.apply(want))
+      .then(() => this.onError(null))
+      .catch(async (e) => {
+        if (this.closed) return;
+        // A failed exchange leaves the PeerConnection mid-negotiation; start clean and retry once.
+        this.reset();
+        try {
+          await this.apply(want);
+          this.onError(null);
+        } catch (e2) {
+          if (!this.closed) this.onError(e2 instanceof Error ? e2 : new Error(String(e ?? e2)));
+        }
+      });
+  }
+
+  close() {
+    this.closed = true;
+    this.pc.close();
+    this.streams.clear();
+  }
+
+  // Fresh PeerConnection and SFU session. The old session is abandoned and expires on its own.
+  private reset(notify = true) {
+    this.pc?.close();
+    this.pc = newPeerConnection();
+    this.sessionId = null;
+    this.pulled.clear();
+    this.midToKey.clear();
+    this.streams.clear();
+    if (notify) this.onChange();
+
+    const pc = this.pc;
+    pc.addEventListener("track", (e) => {
+      if (pc !== this.pc) return;
       const key = this.midToKey.get(e.transceiver.mid ?? "");
       if (!key) return;
       const publisher = key.split(":")[0];
@@ -169,19 +208,6 @@ export class Subscriber {
       this.streams.set(publisher, new MediaStream([...existing.filter((t) => t.kind !== e.track.kind), e.track]));
       this.onChange();
     });
-  }
-
-  // Bring pulled tracks in line with `want` (publisher stream → preferred video layer).
-  sync(want: Map<Stream, Rid>) {
-    this.queue = this.queue.then(() => this.apply(want)).catch((e) => {
-      if (!this.closed) this.onError(e instanceof Error ? e : new Error(String(e)));
-    });
-  }
-
-  close() {
-    this.closed = true;
-    this.pc.close();
-    this.streams.clear();
   }
 
   private async apply(want: Map<Stream, Rid>) {
@@ -239,6 +265,16 @@ export class Subscriber {
   }
 
   private async closeTracks(keys: string[]) {
+    // Closing every m-line leaves an SDP with no BUNDLE group, which the browser rejects
+    // under max-bundle. When nothing would remain, just start over with a new session.
+    if (keys.length === this.pulled.size) {
+      const sessionId = this.sessionId;
+      const mids = keys.map((k) => this.pulled.get(k)!.mid);
+      this.reset();
+      if (sessionId) this.conn.request({ op: "close", sessionId, mids }).catch(() => {});
+      return;
+    }
+
     const mids = keys.map((k) => this.pulled.get(k)!.mid);
     for (const k of keys) {
       const { mid } = this.pulled.get(k)!;
