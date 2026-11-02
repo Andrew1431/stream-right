@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import type { CreateRoomResponse, UsageResponse } from "../shared/protocol";
 import { inviteLink, load, remove, save } from "./storage";
+import { DASHBOARD, gb } from "./UsagePanel";
 
 type SavedRoom = { roomId: string; link: string; createdAt: number; ownerKey?: string };
 
@@ -137,9 +138,6 @@ export function Home() {
     </main>
   );
 }
-
-const DASHBOARD = "https://dash.cloudflare.com/?to=/:account/realtime/sfu";
-const gb = (bytes: number) => Math.round(bytes / 1e9).toLocaleString();
 
 function Usage({ creatorKey }: { creatorKey: string }) {
   const [usage, setUsage] = useState<UsageResponse | null>(null);

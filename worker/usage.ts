@@ -5,7 +5,7 @@ type UsageEnv = { CF_API_TOKEN?: string; CF_ACCOUNT_ID?: string };
 
 // Realtime's free allowance is per account per month, shared by SFU and TURN.
 const FREE_BYTES = 1000e9;
-const CACHE_MS = 5 * 60_000;
+const CACHE_MS = 60_000;
 const API = "https://api.cloudflare.com/client/v4";
 
 let cached: { at: number; body: UsageResponse } | undefined;
@@ -40,19 +40,29 @@ export async function getUsage(workerEnv: Env): Promise<UsageResponse> {
   let body: UsageResponse;
   try {
     accountId ??= env.CF_ACCOUNT_ID || (await findAccount(token));
-    const query = `query($account: String!, $since: Date!) {
+    const hourAgo = new Date(now.getTime() - 3600_000).toISOString().slice(0, 19) + "Z";
+    const query = `query($account: String!, $since: Date!, $hourAgo: Time!) {
       viewer { accounts(filter: { accountTag: $account }) {
         sfu: callsUsageAdaptiveGroups(limit: 1, filter: { date_geq: $since }) { sum { egressBytes } }
         turn: callsTurnUsageAdaptiveGroups(limit: 1, filter: { date_geq: $since }) { sum { egressBytes } }
+        sfuHour: callsUsageAdaptiveGroups(limit: 1, filter: { datetime_geq: $hourAgo }) { sum { egressBytes } }
+        turnHour: callsTurnUsageAdaptiveGroups(limit: 1, filter: { datetime_geq: $hourAgo }) { sum { egressBytes } }
       } }
     }`;
-    const data = await cf<{ viewer: { accounts: { sfu: Groups; turn: Groups }[] } }>(token, "/graphql", {
+    type Account = Record<"sfu" | "turn" | "sfuHour" | "turnHour", Groups>;
+    const data = await cf<{ viewer: { accounts: Account[] } }>(token, "/graphql", {
       method: "POST",
-      body: JSON.stringify({ query, variables: { account: accountId, since } }),
+      body: JSON.stringify({ query, variables: { account: accountId, since, hourAgo } }),
     });
     const account = data.viewer.accounts[0];
     const total = (g?: Groups) => g?.reduce((n, x) => n + x.sum.egressBytes, 0) ?? 0;
-    body = { configured: true, egressBytes: total(account?.sfu) + total(account?.turn), freeBytes: FREE_BYTES, since };
+    body = {
+      configured: true,
+      egressBytes: total(account?.sfu) + total(account?.turn),
+      lastHourBytes: total(account?.sfuHour) + total(account?.turnHour),
+      freeBytes: FREE_BYTES,
+      since,
+    };
   } catch (e) {
     accountId = undefined;
     body = { configured: true, error: e instanceof Error ? e.message : String(e) };

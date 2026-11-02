@@ -235,6 +235,15 @@ export class Subscriber {
     this.streams.clear();
   }
 
+  // Total media bytes received on the current connection (restarts from 0 after a reset).
+  async bytesReceived(): Promise<number> {
+    let total = 0;
+    (await this.pc.getStats()).forEach((s) => {
+      if (s.type === "inbound-rtp") total += s.bytesReceived ?? 0;
+    });
+    return total;
+  }
+
   // Fresh PeerConnection and SFU session. The old session is abandoned and expires on its own.
   private reset(notify = true) {
     this.pc?.close();

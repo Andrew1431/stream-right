@@ -98,7 +98,7 @@ export const CloseCode = {
 export type UsageResponse =
   | { configured: false }
   | { configured: true; error: string }
-  | { configured: true; egressBytes: number; freeBytes: number; since: string };
+  | { configured: true; egressBytes: number; lastHourBytes: number; freeBytes: number; since: string };
 
 // ownerKey proves you made the room, so you can rotate its link without the creator key.
 export type CreateRoomRequest = { name: string; rotate?: boolean; ownerKey?: string };

@@ -320,6 +320,42 @@ a.link:hover {
   background: var(--tally);
 }
 
+.usage-panel {
+  position: fixed;
+  top: 64px;
+  right: 16px;
+  z-index: 30;
+  width: min(360px, calc(100vw - 32px));
+  margin: 0;
+  box-shadow: var(--float), var(--machined);
+}
+
+.usage-panel h2 {
+  margin: 0;
+}
+
+.usage-panel p {
+  margin: 10px 0 0;
+}
+
+.usage-stats {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px 14px;
+  margin: 14px 0 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--seam);
+}
+
+.usage-stats dt {
+  color: var(--pewter);
+}
+
+.usage-stats dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
 .members li {
   padding: 6px 0;
   border-bottom: 1px solid var(--seam);

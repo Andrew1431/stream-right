@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
 import { MAX_NAME_LENGTH, RIDS, type Member, type Rid, type Stream } from "../shared/protocol";
 import { RoomConnection, type RoomStatus } from "./connection";
 import {
@@ -16,6 +16,7 @@ import {
 import { loadObsKey, ObsPanel, obsKeyId } from "./ObsPanel";
 import { SelfPreview, useHiddenFor, usePageActive } from "./SelfPreview";
 import { load, save } from "./storage";
+import { UsagePanel, useUsage } from "./UsagePanel";
 
 const NAME_STORE = "displayName";
 const PRESET_STORE = "sharePreset";
@@ -138,6 +139,10 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
   // Receiving
   const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map());
   const [subscriber, setSubscriber] = useState<Subscriber | null>(null);
+  const [showUsage, setShowUsage] = useState(false);
+  const closeUsage = useCallback(() => setShowUsage(false), []);
+  // Only for whoever saved the creator key on this browser, and only if the server has an API token.
+  const usage = useUsage(useMemo(() => load("creatorKey", ""), []));
   const [focusId, setFocusId] = useState<string | null>(null);
   // Quality is chosen per stream, from the menu on that stream's tile.
   const [qualities, setQualities] = useState<Record<string, Quality>>({});
@@ -377,8 +382,20 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
           <button type="button" className={showObs ? "chip active" : "chip"} onClick={() => setShowObs((s) => !s)}>
             Stream from OBS
           </button>
+          {usage && (
+            <button
+              type="button"
+              className={showUsage ? "chip active" : "chip"}
+              title="This month's streaming usage"
+              onClick={() => setShowUsage((s) => !s)}
+            >
+              {Math.round(usage.egressBytes / 1e9).toLocaleString()} GB used
+            </button>
+          )}
         </div>
       </header>
+
+      {showUsage && usage && <UsagePanel usage={usage} subscriber={subscriber} onClose={closeUsage} />}
 
       {showObs && (
         <ObsPanel

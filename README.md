@@ -135,7 +135,7 @@ To show this month's total right on the home page instead, give the site a read-
 2. Name it, add the permission **Account → Account Analytics → Read**, and press **Continue to summary**, then **Create Token**.
 3. Copy the token and add it as a secret named `CF_API_TOKEN`: `npx wrangler secret put CF_API_TOKEN`, or your Worker → **Settings → Variables and Secrets → Add** (type **Secret**).
 
-The home page then shows how much of the free 1,000 GB has gone to viewers this month and, past that, roughly what it's costing. The figure lags a few minutes behind and is an estimate; your Cloudflare bill is exact. Only people with the creator key see it. If your token can see more than one account, also add a `CF_ACCOUNT_ID` secret with your account ID (shown on your account's overview page).
+The home page then shows how much of the free 1,000 GB has gone to viewers this month and, past that, roughly what it's costing. Inside a room, a **GB used** button in the top bar opens a card with the last hour's usage, what an hour costs once the free amount is gone (or now, if it is), how long the free amount lasts at that pace, and how much your own browser is receiving. The figure lags a few minutes behind and is an estimate; your Cloudflare bill is exact. Only people with the creator key see it. If your token can see more than one account, also add a `CF_ACCOUNT_ID` secret with your account ID (shown on your account's overview page).
 
 ## Lost or leaked keys
 
