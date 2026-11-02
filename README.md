@@ -6,8 +6,7 @@ Private rooms for watching each other's games, at the quality you actually play 
 
 Send friends a link. Everyone in the room can share a screen, a game window or an OBS feed at the same time, up to 4K or high frame rates, and each viewer picks how they watch: one stream large or several side by side. It runs on your own Cloudflare account, so there's no subscription and no per-seat fee, and most friend groups stay inside Cloudflare's free allowance.
 
-<!-- TODO: replace OWNER/REPO once the repository is public. -->
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/OWNER/REPO)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Andrew1431/stream-right)
 
 - **Everyone can stream at once.** Focus on one stream with the others as thumbnails, or split the screen between them.
 - **Quality per viewer.** Streams are sent as simulcast (full, half and quarter size). Each tile picks the layer that fits its size, or you choose High, Medium or Low for that tile.
@@ -54,8 +53,8 @@ You need a Cloudflare account (free). Cloudflare asks for a payment method befor
 **Or from your computer** (Node 22+):
 
 ```bash
-git clone https://github.com/OWNER/REPO stream
-cd stream
+git clone https://github.com/Andrew1431/stream-right
+cd stream-right
 npm install
 npx wrangler login
 npx wrangler secret put CREATOR_KEY
