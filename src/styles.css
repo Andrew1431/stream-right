@@ -497,10 +497,251 @@ a.link:hover {
 }
 
 .banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   margin: 0;
   padding: 8px 16px;
   background: rgb(255 90 78 / 0.08);
   border-bottom: 1px solid rgb(255 90 78 / 0.25);
+}
+
+button.banner-close {
+  padding: 0 6px;
+  border: none;
+  background: none;
+  box-shadow: none;
+  color: inherit;
+  font-size: 1.2rem;
+  line-height: 1;
+}
+
+/* Top bar controls: each one is a different piece of hardware on the same rail. */
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Quality and Share fused into one machined unit. */
+.share-group {
+  display: flex;
+}
+
+.share-group > * {
+  border-radius: 0;
+}
+
+.share-group > :first-child {
+  border-radius: 8px 0 0 8px;
+}
+
+.share-group > :last-child {
+  border-radius: 0 8px 8px 0;
+}
+
+.share-group > select + select {
+  border-left: none;
+}
+
+/* Clip: a brushed-steel record key with a red LED set into it. */
+button.clip-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 15px 7px 10px;
+  border: 1px solid #555c64;
+  border-radius: 999px;
+  background:
+    radial-gradient(120% 90% at 30% 0%, rgb(255 255 255 / 0.45), transparent 55%),
+    repeating-radial-gradient(circle at 50% 160%, rgb(255 255 255 / 0.07) 0 1px, rgb(0 0 0 / 0.06) 1px 2px),
+    linear-gradient(180deg, #c3c9cf 0%, #929aa2 52%, #a9b0b7 100%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.6), inset 0 -1px 0 rgb(0 0 0 / 0.25), 0 1px 2px rgb(0 0 0 / 0.55);
+  color: #15181c;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.rec-led {
+  flex: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #ffb3aa 0%, #f0352a 45%, #8c120b 100%);
+  box-shadow: 0 0 0 2px #6a7179, 0 0 0 3px rgb(255 255 255 / 0.35), 0 0 8px 1px rgb(255 59 48 / 0.75);
+}
+
+button.clip-key:disabled {
+  opacity: 0.6;
+}
+
+button.clip-key:disabled:not(.saving) .rec-led {
+  background: radial-gradient(circle at 35% 30%, #c7a6a3 0%, #7d3a35 60%, #3d1a17 100%);
+  box-shadow: 0 0 0 2px #6a7179, 0 0 0 3px rgb(255 255 255 / 0.35);
+}
+
+button.clip-key.failed {
+  color: #6d1f1a;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  button.clip-key.saving .rec-led {
+    animation: rec-blink 0.6s steps(2, jump-none) infinite;
+  }
+}
+
+@keyframes rec-blink {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+/* Usage: a readout set flush into the bar, with a gauge underneath. */
+button.meter-key {
+  position: relative;
+  padding: 5px 9px 10px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  box-shadow: none;
+  color: var(--platinum-lo);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+button.meter-key:hover:not(:disabled),
+button.meter-key.active {
+  background: rgb(255 255 255 / 0.05);
+  color: var(--platinum);
+  filter: none;
+}
+
+.meter-track {
+  position: absolute;
+  left: 9px;
+  right: 9px;
+  bottom: 4px;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: linear-gradient(90deg, #5fc28a 0%, #e8b04a 60%, #ef4f3f 100%);
+  box-shadow: 0 1px 0 var(--edge);
+}
+
+/* Covers the unused part, so the visible colour says how close to the limit you are. */
+.meter-track > span {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  background: #0d0f12;
+}
+
+/* OBS: a round steel knob. */
+button.obs-key {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 1px solid #50575f;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 50% 50%, transparent 54%, rgb(0 0 0 / 0.12) 55%, transparent 60%),
+    conic-gradient(from 200deg, #9aa1a9, #e6e9ec 18%, #8a9199 38%, #cfd4d8 62%, #8f969e 80%, #9aa1a9);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.55), 0 1px 3px rgb(0 0 0 / 0.6);
+  color: #1d2126;
+}
+
+button.obs-key .cog-plate {
+  fill: #c7ccd1;
+}
+
+button.obs-key.active {
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.55), 0 0 0 2px rgb(255 255 255 / 0.25), 0 1px 3px rgb(0 0 0 / 0.6);
+}
+
+button.obs-key.live::after {
+  content: "";
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tally);
+  box-shadow: 0 0 0 2px var(--steel-lo), 0 0 6px var(--tally);
+}
+
+/* More: no hardware, just the three dots. */
+.menu-wrap {
+  position: relative;
+}
+
+button.more-key {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 38px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  box-shadow: none;
+  color: var(--pewter);
+}
+
+button.more-key:hover:not(:disabled),
+button.more-key.active {
+  background: rgb(255 255 255 / 0.06);
+  color: var(--platinum);
+  filter: none;
+}
+
+.room-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 40;
+  min-width: 250px;
+  padding: 6px;
+  border: 1px solid var(--seam);
+  border-radius: 12px;
+  background: var(--brushed), linear-gradient(180deg, var(--steel) 0%, var(--steel-lo) 100%);
+  box-shadow: var(--float), var(--machined);
+}
+
+button.menu-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  box-shadow: none;
+  color: var(--platinum);
+  font-weight: 600;
+  text-align: left;
+}
+
+button.menu-item:hover:not(:disabled),
+button.menu-item:focus-visible {
+  background: rgb(255 255 255 / 0.07);
+  filter: none;
+}
+
+.menu-hint {
+  color: var(--pewter);
+  font-size: 0.8rem;
+  font-weight: 400;
 }
 
 .stage {

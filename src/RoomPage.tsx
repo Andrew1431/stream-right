@@ -32,6 +32,7 @@ const CLIP_MUTED_STORE = "clipMuted";
 const CLIPS_SEEN_STORE = "clipsNoticeSeen";
 const TOAST_MS = 6_000;
 const CLIP_DONE_MS = 4_000;
+const CLIP_FAILED_MS = 3_500;
 
 type Quality = "auto" | Rid;
 type LayoutMode = "focus" | "split";
@@ -192,7 +193,11 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
   const closeClips = useCallback(() => setShowClips(false), []);
   const [clipNotice, setClipNotice] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const [clipStatus, setClipStatus] = useState<{ kind: "idle" } | { kind: "saving" } | { kind: "done"; count: number }>({ kind: "idle" });
+  const [clipStatus, setClipStatus] = useState<
+    { kind: "idle" } | { kind: "saving" } | { kind: "done"; count: number } | { kind: "failed"; message: string }
+  >({ kind: "idle" });
+  const [showMenu, setShowMenu] = useState(false);
+  const closeMenu = useCallback(() => setShowMenu(false), []);
   const buffering = clipsAllowed && clipBuffer && clipsSupported;
   const clipStats = useClipStats(clipper, buffering && showClips);
   const seenAllowed = useRef<boolean | null>(null);
@@ -237,6 +242,7 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
     (!!m.obs && ((!!myObsKeyId && m.obsKeyId === myObsKeyId) || m.name === `${props.name} (OBS)`));
   const watching = streaming.filter((m) => !isMine(m));
   const myObs = streaming.find((m) => m.obs && isMine(m)) ?? null;
+  const clippable = watching.filter((m) => m.stream && !m.stream.noClips);
   const focused = watching.find((m) => m.id === focusId) ?? watching[0] ?? null;
   const split = layout === "split" && watching.length > 1;
   const remoteCount = watching.length;
@@ -387,8 +393,9 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
       setClipStatus({ kind: "done", count });
       setTimeout(() => setClipStatus({ kind: "idle" }), CLIP_DONE_MS);
     } catch (e) {
-      setError((e as Error).message);
-      setClipStatus({ kind: "idle" });
+      // Shown on the button itself and cleared after a moment, not in the sticky error banner.
+      setClipStatus({ kind: "failed", message: (e as Error).message });
+      setTimeout(() => setClipStatus({ kind: "idle" }), CLIP_FAILED_MS);
     }
   }
 
@@ -482,10 +489,9 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
               </li>
             ))}
           </ul>
-          <button type="button" className="link small" onClick={props.onRename}>Rename</button>
         </div>
 
-        <div className="row">
+        <div className="controls">
           {watching.length > 1 && (
             <div className="segmented">
               <button type="button" className={layout === "focus" ? "active" : ""} onClick={() => changeLayout("focus")}>
@@ -501,79 +507,139 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
               Stop sharing ({captured || settingsLabel(settings)})
             </button>
           ) : (
-            <>
-              <select
-                value={preset}
-                onChange={(e) => {
-                  setPreset(e.target.value as PresetId | "custom");
-                  save(PRESET_STORE, e.target.value);
-                }}
-              >
-                {Object.entries(PRESETS).map(([id, p]) => (
-                  <option key={id} value={id}>{p.height ? settingsLabel(p) : "Source (no cap)"}</option>
-                ))}
-                <option value="custom">Custom…</option>
-              </select>
-              {preset === "custom" && (
-                <>
-                  <select
-                    aria-label="Resolution"
-                    value={custom.height}
-                    onChange={(e) => updateCustom({ ...custom, height: Number(e.target.value) })}
-                  >
-                    {HEIGHT_CHOICES.map((h) => (
-                      <option key={h} value={h}>{heightLabel(h)}</option>
-                    ))}
-                  </select>
-                  <select
-                    aria-label="Frame rate"
-                    value={custom.fps}
-                    onChange={(e) => updateCustom({ ...custom, fps: Number(e.target.value) })}
-                  >
-                    {FPS_CHOICES.map((f) => (
-                      <option key={f} value={f}>{f}fps</option>
-                    ))}
-                  </select>
-                </>
-              )}
-              <button type="button" disabled={status.kind !== "connected" || starting} onClick={startShare}>
-                {starting ? "Starting…" : "Share screen"}
-              </button>
-            </>
+            // Live from OBS already: browser sharing would be a second copy of the same screen.
+            !myObs && (
+              <div className="share-group">
+                <select
+                  aria-label="Share quality"
+                  value={preset}
+                  onChange={(e) => {
+                    setPreset(e.target.value as PresetId | "custom");
+                    save(PRESET_STORE, e.target.value);
+                  }}
+                >
+                  {Object.entries(PRESETS).map(([id, p]) => (
+                    <option key={id} value={id}>{p.height ? settingsLabel(p) : "Source (no cap)"}</option>
+                  ))}
+                  <option value="custom">Custom…</option>
+                </select>
+                {preset === "custom" && (
+                  <>
+                    <select
+                      aria-label="Resolution"
+                      value={custom.height}
+                      onChange={(e) => updateCustom({ ...custom, height: Number(e.target.value) })}
+                    >
+                      {HEIGHT_CHOICES.map((h) => (
+                        <option key={h} value={h}>{heightLabel(h)}</option>
+                      ))}
+                    </select>
+                    <select
+                      aria-label="Frame rate"
+                      value={custom.fps}
+                      onChange={(e) => updateCustom({ ...custom, fps: Number(e.target.value) })}
+                    >
+                      {FPS_CHOICES.map((f) => (
+                        <option key={f} value={f}>{f}fps</option>
+                      ))}
+                    </select>
+                  </>
+                )}
+                <button type="button" disabled={status.kind !== "connected" || starting} onClick={startShare}>
+                  {starting ? "Starting…" : "Share screen"}
+                </button>
+              </div>
+            )
           )}
+
           {buffering && (
             <button
               type="button"
-              className="chip clip-button"
-              disabled={clipStatus.kind === "saving"}
-              title="Saves one video per stream you're buffering, on this device. Everyone in the room is told."
+              className={`clip-key ${clipStatus.kind}`}
+              disabled={clipStatus.kind === "saving" || !clippable.length}
+              title={
+                clipStatus.kind === "failed"
+                  ? clipStatus.message
+                  : clippable.length
+                    ? `Saves the last ${clipSeconds}s of each stream you're watching, on this device. Everyone in the room is told.`
+                    : "Nobody else is streaming yet. Clips are of other people's streams."
+              }
               onClick={saveClip}
             >
+              <span className="rec-led" aria-hidden="true" />
               {clipStatus.kind === "saving"
                 ? "Saving…"
                 : clipStatus.kind === "done"
-                  ? `Saved ${clipStatus.count} clip${clipStatus.count === 1 ? "" : "s"}`
-                  : `Clip last ${clipSeconds}s`}
+                  ? `Saved ${clipStatus.count}`
+                  : clipStatus.kind === "failed"
+                    ? "Nothing yet"
+                    : `Clip ${clipSeconds}s`}
             </button>
           )}
-          {!clipsAllowed && isOwner && (
-            <button type="button" className={showClips ? "chip active" : "chip"} onClick={() => setShowClips((s) => !s)}>
-              Clips off
-            </button>
-          )}
-          <button type="button" className={showObs ? "chip active" : "chip"} onClick={() => setShowObs((s) => !s)}>
-            Stream from OBS
-          </button>
+
           {usage && (
             <button
               type="button"
-              className={showUsage ? "chip active" : "chip"}
-              title="This month's streaming usage"
+              className={showUsage ? "meter-key active" : "meter-key"}
+              title={`${Math.round(usage.egressBytes / 1e9).toLocaleString()} of ${Math.round(usage.freeBytes / 1e9).toLocaleString()} free GB used this month`}
               onClick={() => setShowUsage((s) => !s)}
             >
-              {Math.round(usage.egressBytes / 1e9).toLocaleString()} GB used
+              {Math.round(usage.egressBytes / 1e9).toLocaleString()} GB
+              <span className="meter-track" aria-hidden="true">
+                <span style={{ width: `${(1 - Math.min(usage.egressBytes / usage.freeBytes, 1)) * 100}%` }} />
+              </span>
             </button>
           )}
+
+          <button
+            type="button"
+            className={`obs-key${showObs ? " active" : ""}${myObs ? " live" : ""}`}
+            title={myObs ? "You're live from OBS. Stream settings" : "Stream from OBS"}
+            aria-label="Stream from OBS"
+            onClick={() => setShowObs((s) => !s)}
+          >
+            <ObsGlyph />
+          </button>
+
+          <div className="menu-wrap">
+            <button
+              type="button"
+              className={showMenu ? "more-key active" : "more-key"}
+              aria-label="More"
+              aria-haspopup="menu"
+              aria-expanded={showMenu}
+              onClick={() => setShowMenu((s) => !s)}
+            >
+              <svg viewBox="0 0 4 16" width="4" height="16" aria-hidden="true">
+                <circle cx="2" cy="2" r="1.6" fill="currentColor" />
+                <circle cx="2" cy="8" r="1.6" fill="currentColor" />
+                <circle cx="2" cy="14" r="1.6" fill="currentColor" />
+              </svg>
+            </button>
+            {showMenu && (
+              <RoomMenu
+                onClose={closeMenu}
+                items={[
+                  ...(clipsAllowed || isOwner
+                    ? [{
+                        label: "Clips",
+                        hint: !clipsAllowed ? "Off in this room" : buffering ? `Keeping the last ${clipSeconds}s` : "On in this room",
+                        onSelect: () => setShowClips(true),
+                      }]
+                    : []),
+                  ...(usage
+                    ? [{
+                        label: "Streaming usage",
+                        hint: `${Math.round(usage.egressBytes / 1e9).toLocaleString()} of ${Math.round(usage.freeBytes / 1e9).toLocaleString()} GB this month`,
+                        onSelect: () => setShowUsage(true),
+                      }]
+                    : []),
+                  { label: "Stream from OBS", hint: myObs ? "You're live" : "Server and token", onSelect: () => setShowObs(true) },
+                  { label: "Change your name", hint: me?.name ?? props.name, onSelect: props.onRename },
+                ]}
+              />
+            )}
+          </div>
         </div>
       </header>
 
@@ -624,7 +690,12 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
         />
       )}
 
-      {(error || viewError) && <p className="error banner">{error || viewError}</p>}
+      {(error || viewError) && (
+        <p className="error banner">
+          <span>{error || viewError}</span>
+          <button type="button" className="banner-close" aria-label="Dismiss" onClick={() => { setError(""); setViewError(""); }}>×</button>
+        </p>
+      )}
 
       {((localStream && me) || myObs) && (
         <SelfPreview title={localStream && myObs ? "You're live (browser + OBS)" : myObs ? "You're live from OBS" : "You're sharing"}>
@@ -881,4 +952,64 @@ function StatusBadge({ status }: { status: RoomStatus }) {
     closed: "Disconnected",
   }[status.kind];
   return <span className={`badge ${status.kind}`}>{label}</span>;
+}
+
+// OBS's three-lobed mark in a ring, with a small cog: this button opens stream settings.
+function ObsGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+      <circle cx="11" cy="11" r="8.6" fill="none" stroke="currentColor" strokeWidth="1.7" />
+      <circle cx="11" cy="6.9" r="2.5" fill="currentColor" />
+      <circle cx="14.55" cy="13.05" r="2.5" fill="currentColor" />
+      <circle cx="7.45" cy="13.05" r="2.5" fill="currentColor" />
+      <g transform="translate(18.6 18.6)">
+        <circle r="5.2" className="cog-plate" />
+        <circle r="3.4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeDasharray="1.33 1.34" />
+        <circle r="2.5" fill="currentColor" />
+        <circle r="0.95" className="cog-plate" />
+      </g>
+    </svg>
+  );
+}
+
+type MenuItem = { label: string; hint?: string; onSelect: () => void };
+
+function RoomMenu(props: { items: MenuItem[]; onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const { onClose } = props;
+
+  useEffect(() => {
+    ref.current?.querySelector("button")?.focus();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const onDown = (e: PointerEvent) => {
+      // The ⋮ button toggles the menu itself.
+      if (!ref.current?.parentElement?.contains(e.target as Node)) onClose();
+    };
+    addEventListener("keydown", onKey);
+    addEventListener("pointerdown", onDown);
+    return () => {
+      removeEventListener("keydown", onKey);
+      removeEventListener("pointerdown", onDown);
+    };
+  }, [onClose]);
+
+  return (
+    <div className="room-menu" role="menu" ref={ref}>
+      {props.items.map((item) => (
+        <button
+          key={item.label}
+          type="button"
+          role="menuitem"
+          className="menu-item"
+          onClick={() => {
+            onClose();
+            item.onSelect();
+          }}
+        >
+          <span>{item.label}</span>
+          {item.hint && <span className="menu-hint">{item.hint}</span>}
+        </button>
+      ))}
+    </div>
+  );
 }
