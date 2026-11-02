@@ -9,8 +9,9 @@ const domains = (process.env.CUSTOM_DOMAIN ?? "")
   .map((d) => d.trim())
   .filter(Boolean);
 
+// One command string through the shell, so npm/npx resolve on Windows too.
 function run(cmd, args) {
-  const { status } = spawnSync(cmd, args, { stdio: "inherit", shell: process.platform === "win32" });
+  const { status } = spawnSync([cmd, ...args].join(" "), { stdio: "inherit", shell: true });
   if (status !== 0) process.exit(status ?? 1);
 }
 

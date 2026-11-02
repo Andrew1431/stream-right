@@ -14,6 +14,7 @@
   // Served at <name>.<your-subdomain>.workers.dev. For your own domain, set CUSTOM_DOMAIN in .env
   // (see .env.example) and deploy with `npm run deploy`.
   "workers_dev": true,
+  "preview_urls": false,
   "vars": {
     // "key": rooms need the creator key. "open": anyone with the site's address can make rooms.
     "ROOM_CREATION": "key"
