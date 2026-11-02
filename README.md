@@ -35,7 +35,7 @@ Uploading (streaming) is free. You're charged for what each viewer receives, rou
 
 Five friends each watching one 1080p60 stream for a 5-hour evening is about 70 GB, so 1,000 GB covers a dozen or so evenings a month. Idle rooms and a stream nobody is watching cost nothing.
 
-To get a heads-up before spending anything, add a **Usage Based Billing** notification under **Notifications** in the Cloudflare dashboard.
+To get a heads-up before spending anything, add a **Usage Based Billing** notification under **Notifications** in the Cloudflare dashboard. The site can also show this month's usage on its home page; see [See your usage](#see-your-usage).
 
 ## Set it up
 
@@ -96,17 +96,24 @@ Give them the creator key. Rooms are never listed anywhere: each browser keeps i
 
 New versions land on this repository's `main` branch.
 
-**If you used Deploy to Cloudflare**, Cloudflare made a copy of this repository in your GitHub account and redeploys whenever it changes. Pull in the latest version and push it:
+**If you used Deploy to Cloudflare**, Cloudflare made a copy of this repository in your GitHub account and redeploys whenever it changes. To update it:
+
+1. Open your copy on GitHub and go to the **Actions** tab. If GitHub asks, enable workflows.
+2. Pick **Update** on the left, press **Run workflow**, then **Run workflow** again.
+
+It pulls in the latest version and Cloudflare deploys it a minute or two later (watch your Worker's **Deployments** tab). Your Worker keeps its name. If you changed files yourself and an update changes the same lines, the update's version wins.
+
+To update automatically every Monday, go to **Settings → Secrets and variables → Actions → Variables** in your copy and add a variable named `AUTO_UPDATE` with the value `true`.
+
+If an update changes the Update workflow itself, GitHub won't let the workflow apply that part. The run finishes with a warning, and everything else is updated. To get the new workflow, copy `.github/workflows/update.yml` from this repository into yours using GitHub's web editor.
+
+Prefer the command line? This does the same:
 
 ```bash
-git clone https://github.com/<you>/<your-copy>
-cd <your-copy>
-git remote add upstream https://github.com/Andrew1431/stream-right
-git pull upstream main
+git remote add upstream https://github.com/Andrew1431/stream-right   # once
+git pull upstream main --allow-unrelated-histories
 git push
 ```
-
-Next time, only the last two commands are needed. The push triggers a new deploy, visible under your Worker's **Deployments** tab.
 
 **If you deployed from your computer:**
 
@@ -117,6 +124,18 @@ npm run deploy
 ```
 
 Updates keep your secrets, rooms and invite links. Anyone in a room when the new version goes live reconnects on their own after a moment.
+
+## See your usage
+
+With the creator key entered, the home page links to your Realtime usage in the Cloudflare dashboard.
+
+To show this month's total right on the home page instead, give the site a read-only Cloudflare API token:
+
+1. In the Cloudflare dashboard, open **Manage account → Account API Tokens** (or **My Profile → API Tokens**) and press **Create Token**, then **Create Custom Token**.
+2. Name it, add the permission **Account → Account Analytics → Read**, and press **Continue to summary**, then **Create Token**.
+3. Copy the token and add it as a secret named `CF_API_TOKEN`: `npx wrangler secret put CF_API_TOKEN`, or your Worker → **Settings → Variables and Secrets → Add** (type **Secret**).
+
+The home page then shows how much of the free 1,000 GB has gone to viewers this month and, past that, roughly what it's costing. The figure lags a few minutes behind and is an estimate; your Cloudflare bill is exact. Only people with the creator key see it. If your token can see more than one account, also add a `CF_ACCOUNT_ID` secret with your account ID (shown on your account's overview page).
 
 ## Lost or leaked keys
 

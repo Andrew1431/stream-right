@@ -1,0 +1,73 @@
+# Pulls the latest version of stream-right into your copy. Cloudflare redeploys when main changes.
+# Run it from the Actions tab (Update → Run workflow), or set a repository variable AUTO_UPDATE=true
+# to have it run every Monday.
+name: Update
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 9 * * 1"
+
+permissions:
+  contents: write
+
+concurrency: update
+
+env:
+  UPSTREAM: https://github.com/Andrew1431/stream-right.git
+
+jobs:
+  update:
+    if: github.repository != 'Andrew1431/stream-right' && (github.event_name == 'workflow_dispatch' || vars.AUTO_UPDATE == 'true')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Merge the latest version
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch --quiet "$UPSTREAM" main
+
+          if git merge-base --is-ancestor FETCH_HEAD HEAD; then
+            echo "Already up to date." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          before=$(git rev-parse HEAD)
+          worker_name=$(node -p 'require("fs").readFileSync("wrangler.jsonc", "utf8").match(/"name":\s*"([^"]+)"/)[1]')
+
+          # The Deploy button's copy starts with its own history, so the first update joins the two.
+          # Where both sides changed a file, the new version wins.
+          if ! git merge FETCH_HEAD --allow-unrelated-histories -X theirs --no-edit -m "Update from stream-right"; then
+            git diff --name-only --diff-filter=U | while read -r f; do
+              if git cat-file -e "FETCH_HEAD:$f" 2>/dev/null; then git checkout FETCH_HEAD -- "$f"; else git rm -q -- "$f"; fi
+            done
+            git commit --no-edit -q
+          fi
+
+          # Keep this Worker's name: the Deploy button may have changed it, and a new name means a new Worker.
+          NAME="$worker_name" node -e '
+            const fs = require("fs");
+            const s = fs.readFileSync("wrangler.jsonc", "utf8");
+            fs.writeFileSync("wrangler.jsonc", s.replace(/"name":\s*"[^"]+"/, JSON.stringify("name") + ": " + JSON.stringify(process.env.NAME)));
+          '
+          git diff --quiet || git commit -qam "Keep this Worker's name"
+
+          # GitHub doesn't let this workflow change workflow files, so those stay as they were.
+          if ! git diff --quiet "$before" HEAD -- .github/workflows; then
+            git rm -rq --ignore-unmatch .github/workflows
+            git checkout "$before" -- .github/workflows
+            git commit -qm "Keep this copy's workflow files"
+            echo "::warning::This update changes .github/workflows, which GitHub doesn't let workflows edit. Everything else was updated. To get the new workflow files, copy them from $UPSTREAM in GitHub's web editor."
+          fi
+
+          {
+            echo "### Updated to the latest stream-right"
+            echo
+            git log --no-merges --format='- %s' "$before..FETCH_HEAD" | head -50
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          git push origin HEAD

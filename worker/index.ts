@@ -4,6 +4,7 @@ import {
   type CreateRoomResponse,
 } from "../shared/protocol";
 import { safeEqual } from "./crypto";
+import { getUsage } from "./usage";
 
 export { Room } from "./room";
 
@@ -18,6 +19,11 @@ function slugify(name: string): string {
     .replace(/-+$/, "");
 }
 
+async function isAdmin(req: Request, env: Env): Promise<boolean> {
+  const key = req.headers.get("Authorization")?.replace(/^Bearer /, "") ?? "";
+  return !!key && !!env.CREATOR_KEY && (await safeEqual(key, env.CREATOR_KEY));
+}
+
 async function createRoom(req: Request, env: Env): Promise<Response> {
   let body: CreateRoomRequest;
   try {
@@ -26,8 +32,7 @@ async function createRoom(req: Request, env: Env): Promise<Response> {
     return json({ error: "Invalid JSON" }, 400);
   }
 
-  const key = req.headers.get("Authorization")?.replace(/^Bearer /, "") ?? "";
-  const admin = !!key && !!env.CREATOR_KEY && (await safeEqual(key, env.CREATOR_KEY));
+  const admin = await isAdmin(req, env);
   const rotate = body.rotate === true;
   // Rotation is checked by the room itself: admin or the room's owner key.
   if (!admin && !rotate) return json({ error: "Invalid creator key" }, 401);
@@ -49,6 +54,11 @@ async function createRoom(req: Request, env: Env): Promise<Response> {
 export default {
   async fetch(req, env): Promise<Response> {
     const { pathname } = new URL(req.url);
+
+    if (pathname === "/api/usage") {
+      if (!(await isAdmin(req, env))) return json({ error: "Invalid creator key" }, 401);
+      return json(await getUsage(env));
+    }
 
     if (pathname === "/api/rooms") {
       if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);

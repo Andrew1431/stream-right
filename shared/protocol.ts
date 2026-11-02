@@ -94,6 +94,12 @@ export const CloseCode = {
   Replaced: 4009,
 } as const;
 
+// Realtime data sent to viewers this calendar month (UTC), for whoever holds the creator key.
+export type UsageResponse =
+  | { configured: false }
+  | { configured: true; error: string }
+  | { configured: true; egressBytes: number; freeBytes: number; since: string };
+
 // ownerKey proves you made the room, so you can rotate its link without the creator key.
 export type CreateRoomRequest = { name: string; rotate?: boolean; ownerKey?: string };
 // ownerKey is only sent when a new one was made; keep the one you have otherwise.
