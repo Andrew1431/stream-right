@@ -1,6 +1,6 @@
 # stream
 
-Private rooms for watching each other's games, at the quality you actually play at.
+A self-hosted replacement for streaming games to your friends on Discord, without the 720p30 cap. Keep your Discord call for voice; watch each other here at whatever quality you send.
 
 ![A room with four friends streaming, split view](docs/img/split.webp)
 

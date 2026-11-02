@@ -4,9 +4,9 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>stream: watch your friends play</title>
-  <meta name="description" content="Self-hosted rooms for watching each other's games at full quality. Everyone streams at once, at any resolution and frame rate, on your own Cloudflare account." />
+  <meta name="description" content="A self-hosted replacement for streaming games to friends on Discord, without the 720p30 cap. Everyone streams at once, at any resolution and frame rate, on your own Cloudflare account." />
   <meta property="og:title" content="stream: watch your friends play" />
-  <meta property="og:description" content="Self-hosted rooms for watching each other's games at full quality, on your own Cloudflare account." />
+  <meta property="og:description" content="Stream games to your friends without Discord's 720p30 cap. Self-hosted on your own Cloudflare account." />
   <meta property="og:image" content="img/focus.webp" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -145,6 +145,13 @@
     th { color: var(--pewter); font-weight: 500; font-size: 14px; }
     td:last-child, th:last-child { text-align: right; }
     .note { margin-top: 16px; font-size: 14px; color: var(--pewter); }
+    .versus { margin-top: 44px; table-layout: fixed; }
+    .versus th, .versus td { padding: 16px 16px 16px 0; text-align: left; vertical-align: top; }
+    .versus thead th { font-size: 15px; }
+    .versus tbody th { color: var(--platinum-lo); font-size: 15px; }
+    .versus td { color: var(--pewter); }
+    .versus th:last-child, .versus td:last-child { color: var(--platinum); font-weight: 600; padding-right: 0; }
+    .versus thead th:last-child { background: var(--heat); -webkit-background-clip: text; background-clip: text; color: transparent; font-weight: 800; font-size: 17px; }
 
     /* Setup */
     ol.steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 28px; margin: 48px 0 0; padding: 0; list-style: none; counter-reset: step; }
@@ -167,6 +174,9 @@
       section { padding-top: 88px; }
     }
     @media (max-width: 520px) {
+      .versus { font-size: 14px; }
+      .versus th, .versus td { padding-right: 10px; }
+      .versus tbody th { font-size: 13px; }
       .rail nav a:not(:last-child) { display: none; }
       .facts { grid-template-columns: 1fr; }
       .bezel { padding: 5px; border-radius: 12px; }
@@ -179,6 +189,7 @@
     <header class="rail">
       <a class="mark" href="./">stream</a>
       <nav>
+        <a href="#discord">vs Discord</a>
         <a href="#features">Features</a>
         <a href="#cost">Cost</a>
         <a href="#setup">Setup</a>
@@ -188,8 +199,8 @@
 
     <main>
       <div class="hero">
-        <h1>Watch your friends play, at the quality they play at.</h1>
-        <p class="lede">Private rooms where everyone can stream at once, at whatever resolution and frame rate they choose, and each viewer picks what they watch. You host it on your own Cloudflare account, so there's no subscription and no per-seat fee.</p>
+        <h1>Tired of streaming to friends at Discord's 720p30?</h1>
+        <p class="lede">stream replaces Discord's Go Live for your friend group. Stay in your Discord call for voice, and watch each other's games here at whatever resolution and frame rate you send, with no Nitro. Everyone can stream at once, and you host it on your own Cloudflare account, so there's no subscription and no per-seat fee.</p>
         <div class="actions">
           <a class="btn primary" href="https://deploy.workers.cloudflare.com/?url=https://github.com/Andrew1431/stream-right">Deploy to Cloudflare</a>
           <a class="btn steel" href="https://github.com/Andrew1431/stream-right#set-it-up">Read the setup guide</a>
@@ -205,6 +216,22 @@
           <li><strong>MIT licensed</strong>Your server, your rules</li>
         </ul>
       </div>
+
+      <section id="discord">
+        <h2>Keep the call. Move the streams.</h2>
+        <div class="copy">
+          <p>Discord is great for talking. Its screen share tops out at 720p and 30 frames a second unless whoever is streaming pays for Nitro, and even then it stops at 1080p60.</p>
+        </div>
+        <table class="versus">
+          <thead><tr><th></th><th>Discord</th><th>Discord Nitro</th><th>stream</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Stream quality</th><td>720p, 30fps</td><td>1080p, 60fps</td><td>Whatever you send: 1440p, 4K, 120fps and up</td></tr>
+            <tr><th scope="row">Price</th><td>Free</td><td>$9.99 a month, per streamer</td><td>Free for about 1,000 GB watched a month, then $0.05 per GB</td></tr>
+            <tr><th scope="row">Voice chat</th><td>Yes</td><td>Yes</td><td>Keep using Discord</td></tr>
+          </tbody>
+        </table>
+        <p class="note">Discord limits as of November 2026. stream isn't affiliated with Discord.</p>
+      </section>
 
       <section id="features">
         <h2>Built for watching, not broadcasting.</h2>
