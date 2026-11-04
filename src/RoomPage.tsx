@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type FormEvent } from "react";
 import { CLIP_MAX_SECONDS, CLIP_MIN_SECONDS, MAX_NAME_LENGTH, RIDS, type Member, type Rid, type Stream } from "../shared/protocol";
 import { Clipper, clipsSupported } from "./clips/clipper";
 import { ClipsNotice, clipsBadgeHint, ClipsPanel, playShutter, Toasts, useClipStats, type Toast } from "./ClipsPanel";
@@ -30,6 +30,7 @@ const CLIP_SECONDS_STORE = "clipSeconds";
 const NO_CLIPS_STORE = "noClips";
 const CLIP_MUTED_STORE = "clipMuted";
 const CLIPS_SEEN_STORE = "clipsNoticeSeen";
+const VOLUME_STORE = "streamVolumes";
 const TOAST_MS = 6_000;
 const CLIP_DONE_MS = 4_000;
 const CLIP_FAILED_MS = 3_500;
@@ -162,6 +163,10 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
   const [focusId, setFocusId] = useState<string | null>(null);
   // Quality is chosen per stream, from the menu on that stream's tile.
   const [qualities, setQualities] = useState<Record<string, Quality>>({});
+  // Keyed by name so a streamer's volume survives reconnects and visits. Unmuting isn't
+  // remembered: a reload would then try to autoplay with sound, which browsers block.
+  const [volumes, setVolumes] = useState<Record<string, number>>(() => load(VOLUME_STORE, {}));
+  const [unmuted, setUnmuted] = useState<Record<string, boolean>>({});
   const [showObs, setShowObs] = useState(false);
   const [obsKey, setObsKey] = useState(() => loadObsKey(props.roomId));
   const [myObsKeyId, setMyObsKeyId] = useState("");
@@ -459,6 +464,15 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
       quality={kind === "big" && m.id !== you ? (qualities[m.id] ?? "auto") : undefined}
       clipsOff={clipsAllowed && !!m.stream?.noClips}
       onQuality={(q) => setQualities((prev) => ({ ...prev, [m.id]: q }))}
+      volume={volumes[m.name] ?? 1}
+      muted={!unmuted[m.name]}
+      onVolume={(v) => {
+        const next = { ...volumes, [m.name]: v };
+        setVolumes(next);
+        save(VOLUME_STORE, next);
+        setUnmuted((prev) => ({ ...prev, [m.name]: v > 0 }));
+      }}
+      onMuted={(muted) => setUnmuted((prev) => ({ ...prev, [m.name]: !muted }))}
     />
   );
 
@@ -776,10 +790,15 @@ function VideoTile(props: {
   onQuality?: (q: Quality) => void;
   // The room allows clips but this streamer opted out.
   clipsOff?: boolean;
+  // Unset on your own preview, which is always silent.
+  volume?: number;
+  muted?: boolean;
+  onVolume?: (v: number) => void;
+  onMuted?: (muted: boolean) => void;
 }) {
   const ref = useRef<HTMLVideoElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
-  const [muted, setMuted] = useState(true);
+  const muted = props.isYou || props.muted !== false;
 
   // Latest callbacks without re-subscribing the observers on every render.
   const callbacks = useRef(props);
@@ -815,6 +834,9 @@ function VideoTile(props: {
   }, [shown]);
 
   const hasAudio = !props.isYou && !!props.stream?.getAudioTracks().length;
+  useEffect(() => {
+    if (ref.current) ref.current.volume = props.volume ?? 1;
+  }, [props.volume, shown]);
 
   function toggleFullscreen() {
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
@@ -823,7 +845,7 @@ function VideoTile(props: {
 
   return (
     <div ref={boxRef} className={props.big ? "tile big" : "tile"} onDoubleClick={props.big ? toggleFullscreen : undefined}>
-      <video ref={ref} autoPlay playsInline muted={props.isYou || muted} />
+      <video ref={ref} autoPlay playsInline muted={muted} />
       {props.paused ? (
         <div className="tile-empty small">Preview paused while this window isn't focused</div>
       ) : (
@@ -834,6 +856,7 @@ function VideoTile(props: {
         {props.isYou && " (you)"}
         {stats && <span className="muted"> · {stats}</span>}
         {props.clipsOff && <span className="muted" title="This streamer doesn't allow clips of their stream"> · No clips</span>}
+        {!props.big && hasAudio && !muted && <span className="muted" title="You're hearing this stream"> · 🔊</span>}
       </div>
       {props.big && (
         <div className="tile-actions">
@@ -845,13 +868,69 @@ function VideoTile(props: {
               onChange={props.onQuality}
             />
           )}
-          {hasAudio && (
-            <button type="button" onClick={() => setMuted((m) => !m)}>{muted ? "Unmute" : "Mute"}</button>
+          {hasAudio && props.onVolume && props.onMuted && (
+            <VolumeControl
+              name={props.member.name}
+              volume={props.volume ?? 1}
+              muted={muted}
+              onVolume={props.onVolume}
+              onMuted={props.onMuted}
+            />
           )}
           <button type="button" onClick={toggleFullscreen} title="Fullscreen (or double-click)">⛶</button>
         </div>
       )}
     </div>
+  );
+}
+
+// Mute toggle plus a slider that slides out on hover; the level is per streamer.
+function VolumeControl(props: {
+  name: string;
+  volume: number;
+  muted: boolean;
+  onVolume: (v: number) => void;
+  onMuted: (muted: boolean) => void;
+}) {
+  const silent = props.muted || props.volume === 0;
+  const level = silent ? 0 : props.volume;
+  return (
+    <div className="volume">
+      <input
+        type="range"
+        min={0}
+        max={1}
+        step={0.05}
+        value={level}
+        aria-label={`${props.name}'s volume`}
+        style={{ "--level": `${level * 100}%` } as CSSProperties}
+        onChange={(e) => props.onVolume(Number(e.target.value))}
+      />
+      <button
+        type="button"
+        aria-label={silent ? `Unmute ${props.name}` : `Mute ${props.name}`}
+        title={silent ? "Unmute" : `Mute (${Math.round(level * 100)}%)`}
+        onClick={() => (silent && props.volume === 0 ? props.onVolume(1) : props.onMuted(!silent))}
+      >
+        <SpeakerGlyph level={level} />
+      </button>
+    </div>
+  );
+}
+
+function SpeakerGlyph({ level }: { level: number }) {
+  return (
+    <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 8h3l4-3.5v11L6 12H3z" fill="currentColor" />
+      {level === 0 ? (
+        <path d="M13.5 8l4 4M17.5 8l-4 4" />
+      ) : (
+        <>
+          <path d="M13 7.5a3.5 3.5 0 0 1 0 5" />
+          {level > 0.5 && <path d="M15.5 5a7 7 0 0 1 0 10" />}
+        </>
+      )}
+    </svg>
   );
 }
 

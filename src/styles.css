@@ -1149,6 +1149,32 @@ button.thumb:hover .tile {
   max-width: 72ch;
 }
 
+.obs-list li + li {
+  margin-top: 6px;
+}
+
+.obs-setup {
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.obs-manual {
+  margin-top: 4px;
+  border-top: 1px solid var(--seam);
+  padding-top: 10px;
+}
+
+.obs-manual summary {
+  cursor: pointer;
+  color: var(--platinum);
+  font-weight: 500;
+}
+
+.obs-manual[open] summary {
+  margin-bottom: 8px;
+}
+
 /* Clips: always visible to the room when they're on */
 
 .clips-badge {
@@ -1276,4 +1302,59 @@ button.thumb:hover .tile {
   box-shadow: var(--float);
   font-size: 0.88rem;
   font-weight: 500;
+}
+
+/* Per-stream volume: the speaker pill, with a slider that slides out to its left on hover */
+
+.volume {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.volume input[type="range"] {
+  width: 0;
+  opacity: 0;
+  margin: 0;
+  height: 4px;
+  appearance: none;
+  border-radius: 999px;
+  background: linear-gradient(to right, var(--platinum) var(--level), rgb(255 255 255 / 0.18) var(--level));
+  cursor: pointer;
+  transition: width 0.15s, opacity 0.15s;
+}
+
+.volume:hover input[type="range"],
+.volume:focus-within input[type="range"] {
+  width: 90px;
+  opacity: 1;
+}
+
+.volume input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--platinum);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.6);
+}
+
+.volume input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: none;
+  border-radius: 50%;
+  background: var(--platinum);
+}
+
+.tile-actions .volume button {
+  display: grid;
+  place-items: center;
+  padding: 4px 9px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .volume input[type="range"] {
+    transition: none;
+  }
 }
