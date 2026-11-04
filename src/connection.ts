@@ -30,6 +30,7 @@ const FINAL_REASONS: Record<number, string> = {
   [CloseCode.TokenRotated]: "The invite link was changed. Ask for the new one.",
   [CloseCode.BadMessage]: "The connection was rejected.",
   [CloseCode.Replaced]: "This room was opened in another tab.",
+  [CloseCode.UsageLimit]: "This server reached the monthly streaming limit its owner set. Rooms open again on the 1st (UTC).",
 };
 
 // Per tab, so a reload replaces this tab's old member instead of duplicating it.

@@ -18,7 +18,7 @@ jobs:
     if: github.repository == 'Andrew1431/stream-right'
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Tag matches the app version
         if: startsWith(github.ref, 'refs/tags/')
@@ -30,7 +30,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm

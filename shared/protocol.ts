@@ -114,6 +114,8 @@ export const CloseCode = {
   NotFound: 4004,
   HelloTimeout: 4008,
   Replaced: 4009,
+  // The server's owner set a monthly streaming limit and it has been reached.
+  UsageLimit: 4029,
 } as const;
 
 // Whether a saved invite link still works, and who's in the room (for the home page's recent rooms).
@@ -123,7 +125,15 @@ export type RoomPeek = { ok: false } | { ok: true; people: number; live: number 
 export type UsageResponse =
   | { configured: false }
   | { configured: true; error: string }
-  | { configured: true; egressBytes: number; lastHourBytes: number; freeBytes: number; since: string };
+  | {
+      configured: true;
+      egressBytes: number;
+      lastHourBytes: number;
+      freeBytes: number;
+      since: string;
+      // Set when the owner capped monthly streaming (USAGE_LIMIT_GB): rooms close at this amount.
+      limitBytes?: number;
+    };
 
 // ownerKey proves you made the room, so you can rotate its link without the creator key.
 export type CreateRoomRequest = { name: string; rotate?: boolean; ownerKey?: string };

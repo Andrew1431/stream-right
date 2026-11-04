@@ -17,6 +17,7 @@ import {
 import { randomToken, safeEqual, sha256Hex } from "./crypto";
 import { parseOfferTracks } from "./sdp";
 import { sfu, SfuError } from "./sfu";
+import { overLimit, usageLimit } from "./usage";
 
 const HELLO_TIMEOUT_MS = 5_000;
 const MAX_HELLO_BYTES = 4_096;
@@ -38,6 +39,9 @@ const obsScales = (n: number) => Array.from({ length: n }, (_, i) => (n - i) / n
 const OBS_HEALTH_INTERVAL_MS = 30_000;
 const OBS_STARTUP_GRACE_MS = 20_000;
 const OBS_KEY_PREFIX = "obskey:";
+// With a usage limit set, how often a room with people in it checks the month's total.
+const USAGE_CHECK_MS = 5 * 60_000;
+const LIMIT_REASON = "This server reached its monthly streaming limit";
 // Prefix of the key's SHA-256, shared with the room so the key holder can spot their own stream.
 const OBS_KEY_ID_LENGTH = 16;
 
@@ -174,6 +178,7 @@ export class Room extends DurableObject<Env> {
     if (!owner) return text("Invalid stream key. Get a new one from the room's Stream from OBS panel.", 401);
 
     if (req.method === "POST" && !resourceId) {
+      if (await overLimit(this.env)) return text(`${LIMIT_REASON}. It resets on the 1st (UTC).`, 403);
       if (!(req.headers.get("Content-Type") ?? "").includes("application/sdp")) return text("Expected application/sdp", 415);
       const offer = await req.text();
       if (!offer || offer.length > MAX_MESSAGE_BYTES) return text("Bad offer", 400);
@@ -291,6 +296,7 @@ export class Room extends DurableObject<Env> {
     if (!(await safeEqual(await sha256Hex(String(msg.token ?? "")), tokenHash))) {
       return ws.close(CloseCode.BadToken, "Invalid invite link");
     }
+    if (await overLimit(this.env)) return ws.close(CloseCode.UsageLimit, LIMIT_REASON);
 
     // A tab that reconnects (reload, back/forward) replaces its old socket, which may
     // not have sent a close frame yet and would otherwise linger as a duplicate member.
@@ -321,6 +327,7 @@ export class Room extends DurableObject<Env> {
     ws.serializeAttachment(member);
 
     this.send(ws, { type: "welcome", you: member.id, members: this.members(), clipsAllowed: this.clipsAllowed });
+    if (usageLimit(this.env) !== undefined) await this.scheduleAlarm(USAGE_CHECK_MS);
     this.broadcast({ type: "join", member: toMember(member) }, ws);
   }
 
@@ -605,8 +612,17 @@ export class Room extends DurableObject<Env> {
       if (!(await this.obsAlive(s))) await this.endObs(s);
     }
 
+    // Over the owner's limit: end every stream and send everyone away, so viewers stop pulling.
+    const occupied = this.obs.size > 0 || this.members().length > 0;
+    const limited = usageLimit(this.env) !== undefined;
+    if (limited && occupied && (await overLimit(this.env))) {
+      for (const s of [...this.obs.values()]) await this.endObs(s);
+      for (const ws of this.ctx.getWebSockets()) ws.close(CloseCode.UsageLimit, LIMIT_REASON);
+    }
+
     if (pendingHello) await this.scheduleAlarm(HELLO_TIMEOUT_MS);
     else if (this.obs.size) await this.scheduleAlarm(OBS_HEALTH_INTERVAL_MS);
+    else if (limited && this.members().length) await this.scheduleAlarm(USAGE_CHECK_MS);
   }
 
   private async obsAlive(s: ObsStream): Promise<boolean> {

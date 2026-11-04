@@ -795,3 +795,17 @@ img.target-icon {
 .update-key:disabled {
   opacity: 0.5;
 }
+
+.host-own {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--edge);
+}
+
+.host-own button {
+  white-space: nowrap;
+}

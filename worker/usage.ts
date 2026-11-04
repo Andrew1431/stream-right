@@ -1,7 +1,30 @@
 import type { UsageResponse } from "../shared/protocol";
 
 // Optional secrets, so they're not in .dev.vars.example (the Deploy button would ask for them).
-type UsageEnv = { CF_API_TOKEN?: string; CF_ACCOUNT_ID?: string };
+type UsageEnv = { CF_API_TOKEN?: string; CF_ACCOUNT_ID?: string; USAGE_LIMIT_GB?: string };
+
+// The owner's monthly cap in bytes, or undefined for none. "free" means stay inside the free
+// allowance, with a margin because Cloudflare's numbers trail real traffic by a few minutes.
+export function usageLimit(workerEnv: Env): number | undefined {
+  const raw = ((workerEnv as Env & UsageEnv).USAGE_LIMIT_GB ?? "").trim().toLowerCase();
+  if (!raw) return undefined;
+  if (raw === "free") return FREE_BYTES * 0.95;
+  const gb = Number(raw);
+  return Number.isFinite(gb) && gb > 0 ? gb * 1e9 : undefined;
+}
+
+// Whether rooms should stop streaming. Errs open: an analytics outage shouldn't end everyone's stream.
+export async function overLimit(env: Env): Promise<boolean> {
+  const limit = usageLimit(env);
+  if (limit === undefined) return false;
+  const usage = await getUsage(env);
+  if (!usage.configured) return false;
+  if ("error" in usage) {
+    console.error("usage limit: can't read usage", usage.error);
+    return false;
+  }
+  return usage.egressBytes >= limit;
+}
 
 // Realtime's free allowance is per account per month, shared by SFU and TURN.
 const FREE_BYTES = 1000e9;
@@ -62,6 +85,7 @@ export async function getUsage(workerEnv: Env): Promise<UsageResponse> {
       lastHourBytes: total(account?.sfuHour) + total(account?.turnHour),
       freeBytes: FREE_BYTES,
       since,
+      limitBytes: usageLimit(env),
     };
   } catch (e) {
     accountId = undefined;

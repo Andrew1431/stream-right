@@ -56,6 +56,9 @@ export function UsageCard({ usage, link }: { usage: UsageResponse | null; link?:
       <p className="small">
         <strong>{gb(usage.egressBytes)} GB</strong> <span className="muted">of {gb(usage.freeBytes)} GB free.</span>{" "}
         {share >= 1 && <span>Past the free amount: about {dollars(overCost(usage))} so far. </span>}
+        {usage.limitBytes !== undefined && (
+          <span>Rooms close at {gb(usage.limitBytes)} GB this month. </span>
+        )}
         <span className="muted">Updated every few minutes; your Cloudflare bill is exact.</span>
       </p>
       {link}

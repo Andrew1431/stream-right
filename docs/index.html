@@ -191,6 +191,7 @@
       <a class="mark" href="./">stream</a>
       <nav>
         <a href="#discord">vs Discord</a>
+        <a href="#app">Desktop app</a>
         <a href="#features">Features</a>
         <a href="#cost">Cost</a>
         <a href="#setup">Setup</a>
@@ -211,6 +212,7 @@
           <span class="live">3 streaming</span>
           <img src="img/focus.webp" width="2880" height="1800" alt="A room with three friends streaming: a racing game fills most of the screen, with a shooter and a strategy game as thumbnails on the right." />
         </div>
+        <p class="lede-sub">On Windows? <a href="#app">The desktop app</a> streams a game in two clicks, with only that game's sound.</p>
         <ul class="facts">
           <li><strong>Everyone streams</strong>Share a game each, all at once</li>
           <li><strong>Any resolution, any frame rate</strong>You pick; your upload is the only limit</li>
@@ -233,6 +235,44 @@
           </tbody>
         </table>
         <p class="note">Discord limits as of November 2026. stream isn't affiliated with Discord.</p>
+      </section>
+
+      <section id="app">
+        <h2>Go live in two clicks, no OBS required.</h2>
+        <div class="copy">
+          <p>The stream app for Windows puts all your rooms in one window, across as many servers as you have links for. Press Go live, pick a game, and it streams on your graphics card's encoder at the resolution and frame rate you choose, even when the game is fullscreen and has focus.</p>
+          <p>Sound comes from just that game, so your Discord call, music and notifications stay off the stream. Share a whole screen instead and you get everything you hear except Discord and other voice chat.</p>
+        </div>
+        <div class="features">
+          <figure>
+            <div class="bezel"><img src="img/app-golive.webp" width="2880" height="1800" loading="lazy" alt="The stream desktop app with its Go live sheet open: two screens, a list of open windows with previews and icons, a fullscreen game first, and a custom quality of 1440p at 144fps." /></div>
+            <figcaption><strong>Pick a game, not a monitor.</strong> Every open window with a live preview and its icon, fullscreen games first. Screens are there too.</figcaption>
+          </figure>
+          <div class="stack">
+            <figure>
+              <div class="bezel"><img src="img/app.webp" width="2880" height="1800" loading="lazy" alt="The desktop app showing a server with three rooms in a sidebar, and the game-night room open." /></div>
+              <figcaption><strong>Every room, one window.</strong> Servers down the side, rooms under each, a red dot when someone is live. Ctrl+B hides it all when you're watching.</figcaption>
+            </figure>
+            <figure>
+              <div class="bezel"><img src="img/app-join.webp" width="920" height="808" loading="lazy" alt="The Join a room sheet with an invite link pasted, and a Host your own server section with a link to the setup guide." /></div>
+              <figcaption><strong>Paste any invite.</strong> Links from anyone's stream server work. Or host your own from the same sheet.</figcaption>
+            </figure>
+          </div>
+        </div>
+        <table class="versus">
+          <thead><tr><th></th><th>Browser</th><th>OBS</th><th>Desktop app</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Setup</th><td>None: open the link</td><td>Install, import a setup file</td><td>Install once (3 MB)</td></tr>
+            <tr><th scope="row">Smooth while your game has focus</th><td>Often not; browsers throttle capture</td><td>Yes</td><td>Yes</td></tr>
+            <tr><th scope="row">Just the game's sound</th><td>Only for a browser tab</td><td>Yes, with a capture source per app</td><td>Yes, or everything except voice chat</td></tr>
+            <tr><th scope="row">Resolution and frame rate</th><td>Up to what the browser allows</td><td>Any, with every encoder setting</td><td>Any, encoded on your graphics card</td></tr>
+            <tr><th scope="row">Best for</th><td>Joining and quick shares</td><td>Scenes, overlays, fine control</td><td>Streaming games</td></tr>
+          </tbody>
+        </table>
+        <div class="actions">
+          <a class="btn primary" href="https://github.com/Andrew1431/stream-right/releases/latest">Download for Windows</a>
+        </div>
+        <p class="note">Windows 10 or 11. The app updates itself. Windows may warn that it "protected your PC" the first time you install: choose More info, then Run anyway. Watching works in any browser on any system.</p>
       </section>
 
       <section id="features">
@@ -261,9 +301,9 @@
 
       <section id="obs" class="split">
         <div>
-          <h2>Stream from OBS when the browser isn't enough.</h2>
+          <h2>Prefer OBS? It's still a first-class way in.</h2>
           <div class="copy">
-            <p>Browsers throttle screen capture while your game has focus. OBS doesn't. Download a setup file made for your room, import it into OBS, and your game goes out on your graphics card's encoder.</p>
+            <p>If you already stream with OBS, or want scenes and overlays, point it at your room. Download a setup file made for your room, import it into OBS, and your game goes out on your graphics card's encoder. Not on Windows? OBS is the way to stream on macOS and Linux.</p>
           </div>
           <ul class="ticks">
             <li>One setup file: stream settings, encoder and a game capture, ready to import</li>
@@ -299,6 +339,19 @@
             <p class="note">Idle rooms, and streams nobody is watching, cost nothing. Hidden tabs drop to audio after 15 seconds.</p>
           </div>
         </div>
+      </section>
+
+      <section id="limits">
+        <h2>Keep the bill where you want it.</h2>
+        <div class="copy">
+          <p>The server runs on your Cloudflare account, so its usage is billed to you. A few things keep that in check:</p>
+        </div>
+        <ul class="ticks">
+          <li><strong>Set a monthly limit.</strong> Set <code>USAGE_LIMIT_GB</code> to <code>free</code> and rooms close themselves just before the free 1,000 GB runs out, or give a number of gigabytes. Streams end, everyone sees why, and rooms open again on the 1st.</li>
+          <li><strong>Links are keys.</strong> Anyone with a room's invite link can join, watch and stream, and so can anyone they forward it to. Rotate the link to lock everyone out, then send the new one to the people you want.</li>
+          <li><strong>Watch it as you go.</strong> Enter the creator key and the room bar shows how much of the month's free amount is used.</li>
+        </ul>
+        <p class="note">Cloudflare's usage numbers trail real traffic by a few minutes, so a limit can be passed by a little; your Cloudflare bill is the final word. A limit needs the server's analytics token (<a href="https://github.com/Andrew1431/stream-right#see-your-usage">see how</a>). stream is provided as is, without warranty: you're responsible for your Cloudflare account and its charges.</p>
       </section>
 
       <section id="setup">

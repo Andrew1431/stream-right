@@ -3,7 +3,7 @@ import { SidebarGlyph } from "../../ui/SidebarGlyph";
 import { GoLiveSheet } from "./GoLiveSheet";
 import { useUpdates } from "./updates";
 import { onLiveEvent, startLive, stopLive, type LiveEvent, type Whip } from "./live";
-import { inShell } from "./native";
+import { inShell, openExternal } from "./native";
 import { NewRoomSheet, RoomMenu, ServerUsage } from "./OwnerTools";
 import { Sheet } from "./Sheet";
 import {
@@ -29,6 +29,7 @@ const COLLAPSED_STORE = "sidebarCollapsed";
 const MIN_BRIDGE = 1;
 // A room that hasn't said hello by then is on a server from before the bridge.
 const BRIDGE_WAIT_MS = 4000;
+const SETUP_GUIDE = "https://andrew1431.github.io/stream-right/#setup";
 // Making a token can take a round trip to the room server.
 const WHIP_WAIT_MS = 10_000;
 
@@ -559,6 +560,15 @@ function JoinSheet(props: { onClose: () => void; onJoin: (invite: NonNullable<Re
           <button type="submit" disabled={!invite}>Join</button>
         </div>
       </form>
+      <section className="host-own">
+        <div className="stack tight">
+          <strong className="plain">Host your own server</strong>
+          <span className="small muted">
+            Free on your own Cloudflare account for most groups, set up in about ten minutes. You make the rooms and hold the creator key.
+          </span>
+        </div>
+        <button type="button" className="quiet" onClick={() => openExternal(SETUP_GUIDE)}>Setup guide</button>
+      </section>
     </Sheet>
   );
 }

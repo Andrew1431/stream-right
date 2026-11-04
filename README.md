@@ -10,7 +10,7 @@ Send friends a link. Everyone in the room can share a screen, a game window or a
 
 - **Everyone can stream at once.** Focus on one stream with the others as thumbnails, or split the screen between them.
 - **Quality per viewer.** Streams are sent as simulcast (full, half and quarter size). Each tile picks the layer that fits its size, or you choose High, Medium or Low for that tile.
-- **Browser or OBS.** Share straight from the browser, or stream from OBS over WHIP with hardware encoding, game audio only, and no Chrome capture throttling.
+- **Browser, desktop app or OBS.** Share straight from the browser; use the [Windows app](#desktop-app) to stream a game in two clicks with only its sound; or stream from OBS over WHIP. The app and OBS both encode on your graphics card and aren't throttled while your game has focus.
 - **Invite links are the keys.** The room token lives in the link's `#fragment`, so it never reaches server logs. Rotate a link to kick everyone and revoke it.
 - **No accounts.** Type a name and you're in.
 - **Nothing is recorded.** Video goes from the streamer through Cloudflare's relay straight to viewers and is never stored on your server or Cloudflare's. If a room's owner turns on [clips](#clips), viewers can save the last minute or two to their own device, and everyone in the room is told.
@@ -36,7 +36,9 @@ Uploading (streaming) is free. You're charged for what each viewer receives, rou
 
 Five friends each watching one 1080p60 stream for a 5-hour evening is about 70 GB, so 1,000 GB covers a dozen or so evenings a month. Idle rooms and a stream nobody is watching cost nothing.
 
-To get a heads-up before spending anything, add a **Usage Based Billing** notification under **Notifications** in the Cloudflare dashboard. The site can also show this month's usage on its home page; see [See your usage](#see-your-usage).
+To get a heads-up before spending anything, add a **Usage Based Billing** notification under **Notifications** in the Cloudflare dashboard. The site can also show this month's usage on its home page, and close its rooms when a monthly limit is reached; see [See your usage](#see-your-usage) and [Set a monthly limit](#set-a-monthly-limit).
+
+Anyone with a room's invite link can watch and stream in it, and so can anyone they pass it to, so treat links like keys: rotate one to lock everyone out. stream is provided as is, without warranty; you're responsible for your Cloudflare account and its charges.
 
 ## Set it up
 
@@ -138,6 +140,19 @@ To show this month's total right on the home page instead, give the site a read-
 
 The home page then shows how much of the free 1,000 GB has gone to viewers this month and, past that, roughly what it's costing. Inside a room, a **GB used** button in the top bar opens a card with the last hour's usage, what an hour costs once the free amount is gone (or now, if it is), how long the free amount lasts at that pace, and how much your own browser is receiving. The figure lags a few minutes behind and is an estimate; your Cloudflare bill is exact. Only people with the creator key see it. If your token can see more than one account, also add a `CF_ACCOUNT_ID` secret with your account ID (shown on your account's overview page).
 
+## Set a monthly limit
+
+With `CF_API_TOKEN` set (above), you can have rooms close themselves when the month's usage reaches a limit, so a busy month, or a link that got around, can't run up a bill. Add a secret named `USAGE_LIMIT_GB`:
+
+```bash
+npx wrangler secret put USAGE_LIMIT_GB
+```
+
+- `free`: stop just before the free 1,000 GB runs out (at 950 GB).
+- A number, such as `1500`: stop at that many gigabytes. Each 100 GB past the free amount is about $5.
+
+When the limit is reached, every room ends its streams within five minutes and tells everyone the server reached its monthly limit; nobody can join until the 1st of next month (UTC). Raise or remove the secret to open rooms again sooner. Cloudflare's numbers trail real traffic by a few minutes, so usage can pass the limit by a little. If the usage can't be read (an expired token, say), rooms stay open rather than cutting everyone off.
+
 ## Lost or leaked keys
 
 **Creator key.** Set a new one; the old key stops working straight away. Rooms and invite links are unaffected.
@@ -155,6 +170,18 @@ Or in the dashboard: your Worker → **Settings → Variables and Secrets** → 
 **An OBS token leaked.** In the room, open **Stream from OBS** and press **Make a new token**. The old token stops working straight away, and a stream using it leaves the room. To revoke every OBS token in a room at once, rotate the room's link.
 
 **Realtime App Secret leaked.** Make a new secret for the app in **Realtime → Serverless SFU**, then run `npx wrangler secret put REALTIME_APP_SECRET` (or edit it in the dashboard).
+
+## Desktop app
+
+For Windows 10 and 11. [Download the latest release](https://github.com/Andrew1431/stream-right/releases/latest) and run the `-setup.exe`. Windows may say it "protected your PC" the first time, because the installer isn't code-signed yet: choose **More info → Run anyway**. The app updates itself after that.
+
+- **All your rooms in one window.** Paste invite links from any stream server; each server gets an icon down the side, with its rooms underneath and a red dot when someone is live. Ctrl+B hides the sidebar.
+- **Go live in two clicks.** Pick a game window (fullscreen games are listed first, with previews) or a whole screen. It's captured with Windows Graphics Capture and encoded on your graphics card, so it stays smooth while the game has focus.
+- **Only the sound you mean.** A window share sends just that game's sound. A screen share sends everything you hear except Discord, TeamSpeak, Mumble, Slack, Teams and Zoom.
+- **Any resolution and frame rate**, the same presets and custom choices as the browser.
+- **Creator tools.** Add your creator key for a server to make rooms, rotate links and see the month's usage from the app.
+
+The app uses the room's OBS token behind the scenes, so the server needs nothing extra. Servers older than the app still open, with a simpler bar. To release a new version, bump `version` in `desktop/src-tauri/tauri.conf.json` and push a matching `desktop-v<version>` tag; GitHub Actions builds and publishes it, and installed apps offer the update.
 
 ## Install it as an app
 
