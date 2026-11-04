@@ -176,10 +176,6 @@ Clicking an invite link (in Discord, say) opens:
 
 Browser sharing works anywhere, but Chrome throttles capture when the game has focus and can't use your GPU encoder as well as OBS can. OBS 30 or newer streams straight into a room over WHIP.
 
-**Quick setup.** In the room, click **Stream from OBS**, pick a quality and your graphics card, and press **Download setup**. The zip has an OBS profile (server, token, encoder, resolution) and a scene collection with one Game Capture that sends only the game's sound. In OBS, **Profile → Import** the folder and **Scene Collection → Import** the `.json`, switch to both, start your game in fullscreen or borderless, and press **Start Streaming**. The zip holds your token, so treat it like one.
-
-**By hand:**
-
 1. In the room, click **Stream from OBS** to get your server URL and token.
 2. **Settings → Stream:** Service **WHIP**, paste the **Server** and **Bearer Token**. On OBS 32+, set **Simulcast → Total Layers: 3** so viewers can get smaller copies.
 3. **Settings → Output** (Output Mode: Advanced → Streaming):
@@ -189,6 +185,8 @@ Browser sharing works anywhere, but Chrome throttles capture when the game has f
    - **Max B-frames:** 0. WebRTC doesn't support them.
 4. **Settings → Video:** set the output resolution and FPS you want to send (1440p at 120 works if your upload can carry it).
 5. Add a **Game Capture** source and press **Start Streaming**. Your stream shows up in the room as "*your name* (OBS)".
+
+**Or import a setup file.** In the room's **Stream from OBS** panel, switch to **Import a setup file**, pick a quality and your graphics card, and press **Download setup**. The zip has an OBS profile (server, token, encoder, resolution) and a scene collection with one Game Capture that sends only the game's sound. In OBS, **Profile → Import** the folder and **Scene Collection → Import** the `.json`, switch to both, start your game in fullscreen or borderless, and press **Start Streaming**. The zip holds your token, so treat it like one.
 
 **Keep voice chat out of the stream:** in **Settings → Audio**, set **Desktop Audio** to Disabled, then add an **Application Audio Capture** source for the game (Windows 10 2004+). Discord and music stay off the stream without extra software.
 

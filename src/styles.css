@@ -1159,20 +1159,11 @@ button.thumb:hover .tile {
   margin-top: 6px;
 }
 
-.obs-manual {
+.obs-modes {
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
   margin-top: 4px;
-  border-top: 1px solid var(--seam);
-  padding-top: 10px;
-}
-
-.obs-manual summary {
-  cursor: pointer;
-  color: var(--platinum);
-  font-weight: 500;
-}
-
-.obs-manual[open] summary {
-  margin-bottom: 8px;
 }
 
 /* Clips: always visible to the room when they're on */
