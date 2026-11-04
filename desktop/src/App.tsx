@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { SidebarGlyph } from "../../ui/SidebarGlyph";
 import { GoLiveSheet } from "./GoLiveSheet";
+import { useUpdates } from "./updates";
 import { onLiveEvent, startLive, stopLive, type LiveEvent, type Whip } from "./live";
 import { inShell } from "./native";
 import { NewRoomSheet, RoomMenu, ServerUsage } from "./OwnerTools";
@@ -47,6 +48,7 @@ export function App() {
   // The one native stream this app runs, and the room it's going into.
   const [live, setLive] = useState<{ origin: string; room: string; event: LiveEvent } | null>(null);
   const [liveError, setLiveError] = useState("");
+  const updates = useUpdates();
   const requestWhip = useRef<(() => Promise<Whip>) | null>(null);
   useEffect(
     () =>
@@ -193,8 +195,21 @@ export function App() {
         <footer className="me">
           <div className="me-name">
             <span className="wordmark">stream</span>
-            <span className="muted small">{inShell ? "Desktop" : "Preview in a browser"}</span>
+            <span className="muted small">{inShell ? `Desktop${updates.version ? ` ${updates.version}` : ""}` : "Preview in a browser"}</span>
           </div>
+          {updates.state.kind === "ready" && (
+            <button
+              type="button"
+              className="update-key"
+              disabled={!!live}
+              title={live ? "Stop streaming first" : `Restart to update to ${updates.state.version}`}
+              onClick={updates.install}
+            >
+              Restart to update
+            </button>
+          )}
+          {updates.state.kind === "installing" && <span className="muted small">Updating…</span>}
+          {updates.state.kind === "failed" && <span className="small warn" title={updates.state.message}>Update failed</span>}
         </footer>
       </aside>
 

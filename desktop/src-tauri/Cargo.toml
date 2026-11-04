@@ -23,6 +23,8 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "nat
 # Native Go live sender: sans-IO WebRTC, plus a blocking HTTP client for WHIP.
 str0m = { version = "0.25", default-features = false }
 ureq = "3"
+tauri-plugin-updater = "2.14.1"
+tauri-plugin-process = "2.4.0"
 
 [target.'cfg(windows)'.dependencies]
 # Native Go live sender on Windows CNG crypto (str0m is declared below).

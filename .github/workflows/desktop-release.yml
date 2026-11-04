@@ -1,0 +1,61 @@
+# Builds the Windows desktop app in the cloud and publishes it as a GitHub Release, with the
+# signed latest.json the app's auto-updater reads. To release: bump "version" in
+# desktop/src-tauri/tauri.conf.json, commit, then push a matching tag: git tag desktop-v0.1.1 && git push --tags
+name: Desktop release
+
+on:
+  push:
+    tags: ["desktop-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency: desktop-release
+
+jobs:
+  release:
+    if: github.repository == 'Andrew1431/stream-right'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag matches the app version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          version=$(node -p "require('./desktop/src-tauri/tauri.conf.json').version")
+          if [ "desktop-v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match tauri.conf.json version $version"
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      # The desktop app is a workspace of the root package, sharing ui/.
+      - run: npm ci
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: desktop
+          tagName: desktop-v__VERSION__
+          releaseName: stream desktop __VERSION__
+          releaseBody: |
+            Download the `-setup.exe` below and run it. Windows may say it "protected your PC" the first
+            time: click **More info → Run anyway**. After that the app updates itself.
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true

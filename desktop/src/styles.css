@@ -781,3 +781,17 @@ img.target-icon {
   box-shadow: var(--float);
   font-size: 13px;
 }
+
+.update-key {
+  padding: 5px 10px;
+  border-radius: 6px;
+  background: var(--ok);
+  color: #0d1a12;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.update-key:disabled {
+  opacity: 0.5;
+}
