@@ -1,7 +1,8 @@
 // Every stream instance and room this app holds an invite for. An instance is just an
 // origin; its rooms are the "channels".
 
-export type Room = { id: string; token: string };
+// ownerKey is kept for rooms this app made, so their links can be rotated without the creator key.
+export type Room = { id: string; token: string; ownerKey?: string };
 // creatorKey is this server's room-creation password, if you hold it; the app hands it to the
 // server's room pages so they show usage and owner controls.
 export type Server = { origin: string; rooms: Room[]; creatorKey?: string };
@@ -44,6 +45,13 @@ export function addInvite(servers: Server[], invite: { origin: string; room: Roo
   return servers.map((s) => (s === existing ? { ...s, rooms: [...rooms, invite.room] } : s));
 }
 
+// Swaps in a room's new link (after a rotation) where it was, or adds it if it's new.
+export function putRoom(servers: Server[], origin: string, room: Room): Server[] {
+  const existing = servers.find((s) => s.origin === origin);
+  if (!existing?.rooms.some((r) => r.id === room.id)) return addInvite(servers, { origin, room });
+  return servers.map((s) => (s === existing ? { ...s, rooms: s.rooms.map((r) => (r.id === room.id ? room : r)) } : s));
+}
+
 export function removeRoom(servers: Server[], origin: string, id: string): Server[] {
   return servers
     .map((s) => (s.origin === origin ? { ...s, rooms: s.rooms.filter((r) => r.id !== id) } : s))
@@ -54,6 +62,9 @@ export const serverLabel = (origin: string) => new URL(origin).hostname.replace(
 // embed=desktop switches the room into its desktop layout and the bridge in src/desktop.ts.
 export const roomUrl = (origin: string, room: Room) =>
   `${origin}/r/${encodeURIComponent(room.id)}?embed=desktop#k=${room.token}`;
+
+// The link to send people; the same shape the web app's Copy link gives.
+export const inviteLink = (origin: string, room: Room) => `${origin}/r/${encodeURIComponent(room.id)}#k=${room.token}`;
 
 export function setCreatorKey(servers: Server[], origin: string, creatorKey: string): Server[] {
   return servers.map((s) => (s.origin === origin ? { ...s, creatorKey: creatorKey || undefined } : s));

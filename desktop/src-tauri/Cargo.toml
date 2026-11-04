@@ -16,6 +16,10 @@ tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 base64 = "0.23.1"
+serde_json = "1"
+url = "2"
+# Owner requests to stream servers (src/admin.rs). Windows' own TLS, so no extra build tools.
+reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [

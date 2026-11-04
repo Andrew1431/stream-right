@@ -2,12 +2,14 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { SidebarGlyph } from "../../ui/SidebarGlyph";
 import { GoLiveSheet } from "./GoLiveSheet";
 import { inShell } from "./native";
+import { NewRoomSheet, RoomMenu, ServerUsage } from "./OwnerTools";
 import { Sheet } from "./Sheet";
 import {
   addInvite,
   loadServers,
   parseInvite,
   peek,
+  putRoom,
   removeRoom,
   roomUrl,
   saveServers,
@@ -40,6 +42,8 @@ export function App() {
   const [joining, setJoining] = useState(servers.length === 0);
   const [goLive, setGoLive] = useState(false);
   const [editingServer, setEditingServer] = useState(false);
+  const [makingRoom, setMakingRoom] = useState(false);
+  const [menu, setMenu] = useState<{ room: string; x: number; y: number } | null>(null);
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(COLLAPSED_STORE) === "true");
   const peeks = usePeeks(servers);
 
@@ -67,6 +71,8 @@ export function App() {
     return () => removeEventListener("keydown", onKey);
   }, []);
 
+  const closeMenu = useRef(() => setMenu(null)).current;
+
   function update(next: Server[]) {
     setServers(next);
     saveServers(next);
@@ -81,10 +87,17 @@ export function App() {
     }
   }
 
+  function forget(s: Server, r: Room) {
+    if (!confirm(`Forget ${r.id}? You'll need its invite link to come back.`)) return;
+    update(removeRoom(servers, s.origin, r.id));
+    if (r === room) select(null);
+  }
+
   const server = servers.find((s) => s.origin === selected?.origin) ?? servers[0] ?? null;
   const room = server?.rooms.find((r) => r.id === selected?.room) ?? null;
   // Without a room open there's nothing to make room for, and nowhere else to pick one.
   const hidden = collapsed && !!room;
+  const menuRoom = server?.rooms.find((r) => r.id === menu?.room) ?? null;
   const liveElsewhere = servers.some((s) => s.rooms.some((r) => r !== room && isLive(peeks[key(s.origin, r)])));
 
   return (
@@ -129,6 +142,12 @@ export function App() {
                       type="button"
                       className={r === room ? "room-row active" : "room-row"}
                       onClick={() => select({ origin: server.origin, room: r.id })}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        const box = e.currentTarget.getBoundingClientRect();
+                        // From the keyboard (the menu key) there's no pointer, so open under the row.
+                        setMenu({ room: r.id, x: e.clientX || box.left + 12, y: e.clientY || box.bottom });
+                      }}
                     >
                       <span className="hash" aria-hidden="true">#</span>
                       <span className="room-id">{r.id}</span>
@@ -138,6 +157,11 @@ export function App() {
                 );
               })}
             </ul>
+            {server.creatorKey && (
+              <button type="button" className="new-room" onClick={() => setMakingRoom(true)}>
+                <span aria-hidden="true">+</span> New room
+              </button>
+            )}
           </>
         ) : (
           <p className="muted small rooms-empty">No servers yet.</p>
@@ -164,11 +188,7 @@ export function App() {
             onToggleSidebar={toggleSidebar}
             onGoLive={() => setGoLive(true)}
             onLeave={() => select({ origin: server.origin, room: null })}
-            onForget={() => {
-              if (!confirm(`Forget ${room.id}? You'll need its invite link to come back.`)) return;
-              update(removeRoom(servers, server.origin, room.id));
-              select(null);
-            }}
+            onForget={() => forget(server, room)}
           />
         ) : (
           <div className="stage-empty">
@@ -200,6 +220,35 @@ export function App() {
           }}
         />
       )}
+      {makingRoom && server && (
+        <NewRoomSheet
+          server={server}
+          onClose={() => setMakingRoom(false)}
+          onCreated={(made) => {
+            update(putRoom(servers, server.origin, made));
+            select({ origin: server.origin, room: made.id });
+            setMakingRoom(false);
+          }}
+        />
+      )}
+      {menu && server && menuRoom && (
+        <RoomMenu
+          key={menuRoom.id}
+          server={server}
+          room={menuRoom}
+          at={menu}
+          onClose={closeMenu}
+          onRotated={(next) => setServers((now) => {
+            const updated = putRoom(now, server.origin, next);
+            saveServers(updated);
+            return updated;
+          })}
+          onForget={() => {
+            setMenu(null);
+            forget(server, menuRoom);
+          }}
+        />
+      )}
       {goLive && room && <GoLiveSheet roomName={room.id} onClose={() => setGoLive(false)} />}
     </div>
   );
@@ -212,7 +261,7 @@ const monogram = (label: string) => label.replace(/[^a-z0-9]/gi, "").slice(0, 2)
 function usePeeks(servers: Server[]): Record<string, Peek | null> {
   const [peeks, setPeeks] = useState<Record<string, Peek | null>>({});
   const all = servers.flatMap((s) => s.rooms.map((r) => ({ origin: s.origin, room: r })));
-  const signature = all.map((x) => key(x.origin, x.room)).join(",");
+  const signature = all.map((x) => `${key(x.origin, x.room)}#${x.room.token}`).join(",");
   useEffect(() => {
     let stopped = false;
     const poll = () =>
@@ -340,6 +389,7 @@ function ServerSheet(props: { server: Server; onClose: () => void; onSave: (crea
   const [key, setKey] = useState(props.server.creatorKey ?? "");
   return (
     <Sheet title={serverLabel(props.server.origin)} onClose={props.onClose}>
+      {props.server.creatorKey && <ServerUsage server={props.server} />}
       <form
         className="stack"
         onSubmit={(e) => {

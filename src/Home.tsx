@@ -1,8 +1,8 @@
 import { useEffect, useState, type FormEvent } from "react";
 import type { CreateRoomResponse, RoomPeek, UsageResponse } from "../shared/protocol";
+import { DASHBOARD, UsageCard } from "../ui/usage";
 import { forgetRecent, loadRecent, type RecentRoom } from "./recent";
 import { inviteLink, load, remove, save } from "./storage";
-import { DASHBOARD, gb } from "./UsagePanel";
 
 type SavedRoom = { roomId: string; link: string; createdAt: number; ownerKey?: string };
 
@@ -262,38 +262,7 @@ function Usage({ creatorKey }: { creatorKey: string }) {
     </a>
   );
 
-  if (!usage?.configured || "error" in usage) {
-    return (
-      <p className="muted small usage-note">
-        {usage && "error" in usage ? `Couldn't read usage: ${usage.error} ` : "See how much of the free 1,000 GB you've used: "}
-        {link}
-      </p>
-    );
-  }
-
-  const share = usage.egressBytes / usage.freeBytes;
-  const month = new Date(usage.since + "T00:00:00Z").toLocaleString(undefined, { month: "long", timeZone: "UTC" });
-  return (
-    <section className="card usage">
-      <div className="row spread">
-        <h2>Streaming this month</h2>
-        <span className="muted small">since {month} 1</span>
-      </div>
-      <div
-        className={`usage-bar${share >= 1 ? " over" : share >= 0.8 ? " near" : ""}`}
-        role="img"
-        aria-label={`${gb(usage.egressBytes)} of ${gb(usage.freeBytes)} free gigabytes used`}
-      >
-        <span style={{ width: `${Math.min(share, 1) * 100}%` }} />
-      </div>
-      <p className="small">
-        <strong>{gb(usage.egressBytes)} GB</strong> <span className="muted">of {gb(usage.freeBytes)} GB free.</span>{" "}
-        {share >= 1 && <span>Past the free amount: about ${((usage.egressBytes - usage.freeBytes) / 1e9 * 0.05).toFixed(2)} so far. </span>}
-        <span className="muted">Updated every few minutes; your Cloudflare bill is exact.</span>
-      </p>
-      {link}
-    </section>
-  );
+  return <UsageCard usage={usage} link={link} />;
 }
 
 function KeyForm(props: {
