@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { QualityPicker, useShareQuality } from "../../ui/QualityPicker";
 import { inShell, listWindows, type CaptureTarget } from "./native";
 import {
   addInvite,
@@ -316,13 +317,11 @@ function JoinSheet(props: { onClose: () => void; onJoin: (invite: NonNullable<Re
   );
 }
 
-const QUALITIES = ["720p 60", "1080p 60", "1440p 60", "4K 60"] as const;
-
 function GoLiveSheet(props: { roomName: string; onClose: () => void }) {
   const [targets, setTargets] = useState<CaptureTarget[] | null>(null);
   const [picked, setPicked] = useState<number | null>(null);
   const [appAudio, setAppAudio] = useState(true);
-  const [quality, setQuality] = useState<(typeof QUALITIES)[number]>("1080p 60");
+  const quality = useShareQuality();
   const [note, setNote] = useState("");
 
   useEffect(() => {
@@ -372,12 +371,8 @@ function GoLiveSheet(props: { roomName: string; onClose: () => void }) {
         </label>
 
         <div className="row spread">
-          <div className="segmented" role="radiogroup" aria-label="Quality">
-            {QUALITIES.map((q) => (
-              <button key={q} type="button" role="radio" aria-checked={q === quality} className={q === quality ? "active" : ""} onClick={() => setQuality(q)}>
-                {q}
-              </button>
-            ))}
+          <div className="row">
+            <QualityPicker quality={quality} />
           </div>
           <button
             type="button"

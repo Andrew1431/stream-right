@@ -1,0 +1,23 @@
+/* Machined hardware palette shared by the web app and the desktop app. */
+
+:root {
+  --graphite: #1c1f24;
+  --graphite-deep: #15171b;
+  --steel-hi: #2f343c;
+  --steel: #2a2f37;
+  --steel-lo: #22262c;
+  --well: #000;
+  --edge: rgb(255 255 255 / 0.07);
+  --seam: rgb(0 0 0 / 0.55);
+  --platinum: #e8ebee;
+  --platinum-lo: #c3c9cf;
+  --pewter: #98a1ab;
+  --tally: #ff5a4e;
+  --ok: #7fd1a5;
+  --warn: #e2b25a;
+  --heat: linear-gradient(100deg, #e2b25a 0%, #c8668f 52%, #8a6cf2 100%);
+  --brushed: repeating-linear-gradient(90deg, rgb(255 255 255 / 0.014) 0 1px, transparent 1px 3px);
+  --machined: inset 0 1px 0 var(--edge), 0 1px 0 var(--seam);
+  --float: 0 18px 40px -12px rgb(0 0 0 / 0.75), 0 0 0 1px rgb(0 0 0 / 0.6);
+  --platinum-key: linear-gradient(180deg, #f7f8fa 0%, #d6dbe0 48%, #c2c8ce 52%, #dde1e5 100%);
+}

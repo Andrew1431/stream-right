@@ -3,18 +3,8 @@ import { CLIP_MAX_SECONDS, CLIP_MIN_SECONDS, MAX_NAME_LENGTH, RIDS, type Member,
 import { Clipper, clipsSupported } from "./clips/clipper";
 import { ClipsNotice, clipsBadgeHint, ClipsPanel, playShutter, Toasts, useClipStats, type Toast } from "./ClipsPanel";
 import { RoomConnection, type RoomStatus } from "./connection";
-import {
-  FPS_CHOICES,
-  HEIGHT_CHOICES,
-  heightLabel,
-  PRESETS,
-  Publisher,
-  settingsLabel,
-  Subscriber,
-  type Layer,
-  type PresetId,
-  type ShareSettings,
-} from "./media";
+import { QualityPicker, useShareQuality } from "../ui/QualityPicker";
+import { Publisher, settingsLabel, Subscriber, type Layer } from "./media";
 import { forgetObsKey, loadObsKey, ObsPanel, obsKeyId } from "./ObsPanel";
 import { SelfPreview, useHiddenFor, usePageActive } from "./SelfPreview";
 import { rememberRoom } from "./recent";
@@ -22,9 +12,7 @@ import { load, save } from "./storage";
 import { UsagePanel, useUsage } from "./UsagePanel";
 
 const NAME_STORE = "displayName";
-const PRESET_STORE = "sharePreset";
 const LAYOUT_STORE = "layout";
-const CUSTOM_STORE = "customShare";
 const CLIP_BUFFER_STORE = "clipBuffer";
 const CLIP_SECONDS_STORE = "clipSeconds";
 const NO_CLIPS_STORE = "noClips";
@@ -140,12 +128,8 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
   const [viewError, setViewError] = useState("");
 
   // Publishing
-  const [preset, setPreset] = useState<PresetId | "custom">(() => {
-    const p = load<string>(PRESET_STORE, "1080p60");
-    return p === "custom" || p in PRESETS ? (p as PresetId | "custom") : "1080p60";
-  });
-  const [custom, setCustom] = useState<ShareSettings>(() => load(CUSTOM_STORE, { height: 1080, fps: 120 }));
-  const settings = preset === "custom" ? custom : PRESETS[preset];
+  const quality = useShareQuality();
+  const { settings } = quality;
   // What the browser actually delivers, which can be lower than requested.
   const [captured, setCaptured] = useState("");
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
@@ -441,10 +425,6 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
     setLocalStream(null);
   }
 
-  function updateCustom(next: ShareSettings) {
-    setCustom(next);
-    save(CUSTOM_STORE, next);
-  }
 
   function changeLayout(next: LayoutMode) {
     setLayout(next);
@@ -527,41 +507,7 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
             // Live from OBS already: browser sharing would be a second copy of the same screen.
             !myObs && (
               <div className="share-group">
-                <select
-                  aria-label="Share quality"
-                  value={preset}
-                  onChange={(e) => {
-                    setPreset(e.target.value as PresetId | "custom");
-                    save(PRESET_STORE, e.target.value);
-                  }}
-                >
-                  {Object.entries(PRESETS).map(([id, p]) => (
-                    <option key={id} value={id}>{p.height ? settingsLabel(p) : "Source (no cap)"}</option>
-                  ))}
-                  <option value="custom">Custom…</option>
-                </select>
-                {preset === "custom" && (
-                  <>
-                    <select
-                      aria-label="Resolution"
-                      value={custom.height}
-                      onChange={(e) => updateCustom({ ...custom, height: Number(e.target.value) })}
-                    >
-                      {HEIGHT_CHOICES.map((h) => (
-                        <option key={h} value={h}>{heightLabel(h)}</option>
-                      ))}
-                    </select>
-                    <select
-                      aria-label="Frame rate"
-                      value={custom.fps}
-                      onChange={(e) => updateCustom({ ...custom, fps: Number(e.target.value) })}
-                    >
-                      {FPS_CHOICES.map((f) => (
-                        <option key={f} value={f}>{f}fps</option>
-                      ))}
-                    </select>
-                  </>
-                )}
+                <QualityPicker quality={quality} />
                 <button type="button" disabled={status.kind !== "connected" || starting} onClick={startShare}>
                   {starting ? "Starting…" : "Share screen"}
                 </button>

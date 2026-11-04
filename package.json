@@ -9,6 +9,9 @@
   },
   "type": "module",
   "private": true,
+  "workspaces": [
+    "desktop"
+  ],
   "dependencies": {
     "mediabunny": "^1.65.0",
     "react": "^19.3.1",
@@ -31,7 +34,7 @@
         "description": "Password for making rooms. Use a long random string; friends only ever need invite links."
       },
       "REALTIME_APP_ID": {
-        "description": "App ID of your app under **Realtime → Serverless SFU** in the Cloudflare dashboard."
+        "description": "App ID of your app under **Realtime \u2192 Serverless SFU** in the Cloudflare dashboard."
       },
       "REALTIME_APP_SECRET": {
         "description": "App Secret of the same Realtime app."
