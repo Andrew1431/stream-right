@@ -6,6 +6,7 @@ import { RoomConnection, type RoomStatus } from "./connection";
 import { QualityPicker, useShareQuality } from "../ui/QualityPicker";
 import { SidebarGlyph } from "../ui/SidebarGlyph";
 import { gb } from "../ui/usage";
+import { AppLaunch } from "./AppLaunch";
 import { askShell, DESKTOP_DOWNLOAD, desktopAppLink, inDesktop, offerDesktopApp, useShell, useWhipHandoff } from "./desktop";
 import { Publisher, settingsLabel, Subscriber, type Layer } from "./media";
 import { ensureObsKey, forgetObsKey, loadObsKey, ObsPanel, obsKeyId } from "./ObsPanel";
@@ -562,12 +563,15 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
           ) : (
             // Live from OBS already: browser sharing would be a second copy of the same screen.
             !myObs && (
-              <div className="share-group">
-                <QualityPicker quality={quality} />
-                <button type="button" disabled={status.kind !== "connected" || starting} onClick={startShare}>
-                  {starting ? "Starting…" : "Share screen"}
-                </button>
-              </div>
+              <>
+                <div className="share-group">
+                  <QualityPicker quality={quality} />
+                  <button type="button" disabled={status.kind !== "connected" || starting} onClick={startShare}>
+                    {starting ? "Starting…" : "Share screen"}
+                  </button>
+                </div>
+                {offerDesktopApp && !localStream && <AppLaunch />}
+              </>
             )
           )}
 
@@ -781,7 +785,7 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
 
       {watching.length === 0 ? (
         <div className="stage empty muted">
-          {localStream ? "You're sharing. Nobody else is sharing yet." : `Nobody is sharing yet. Click ${inDesktop ? "Go live" : "Share screen"} to start.`}
+          {localStream ? "You're sharing. Nobody else is sharing yet." : `Nobody is sharing yet. Click ${inDesktop ? "Go live" : offerDesktopApp ? "Share screen, or Go live in the app," : "Share screen"} to start.`}
         </div>
       ) : split ? (
         <div className="stage split" style={splitGrid(watching.length)}>

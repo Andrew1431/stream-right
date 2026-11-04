@@ -1469,3 +1469,47 @@ button.go-live {
   align-items: center;
   gap: 9px;
 }
+
+/* Go live in the app: a dark steel key beside the bright Share screen key. */
+button.app-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-color: var(--seam);
+  background: linear-gradient(180deg, var(--steel-hi), var(--steel-lo));
+  box-shadow: var(--machined);
+  color: var(--platinum);
+  white-space: nowrap;
+}
+
+button.app-key.active {
+  box-shadow: var(--machined), inset 0 0 0 1px rgb(255 255 255 / 0.25);
+}
+
+.app-card {
+  width: 290px;
+  padding: 14px;
+}
+
+.app-card-lede {
+  margin: 0 0 6px;
+  color: var(--platinum);
+  font-weight: 600;
+}
+
+.app-card .menu-hint {
+  margin: 0;
+  line-height: 1.45;
+}
+
+.app-card-download {
+  display: block;
+  margin-top: 12px;
+  text-align: center;
+}
+
+@media (max-width: 900px) {
+  .app-key-label {
+    display: none;
+  }
+}
