@@ -7,7 +7,12 @@ export type CaptureTarget = {
   exe: string;
   pid: number;
   fullscreen: boolean;
+  // The program's icon as a PNG data URL.
+  icon?: string | null;
 };
+
+// A whole screen; `id` is the monitor handle the capture side takes.
+export type MonitorTarget = { id: number; width: number; height: number; primary: boolean };
 
 // Outside the Tauri shell (plain `npm run dev` in a browser) the UI runs on sample data.
 export const inShell = isTauri();
@@ -25,6 +30,11 @@ export async function listWindows(): Promise<CaptureTarget[]> {
   return invoke<CaptureTarget[]>("list_windows");
 }
 
+export async function listMonitors(): Promise<MonitorTarget[]> {
+  if (!inShell) return [{ id: 1, width: 2560, height: 1440, primary: true }, { id: 2, width: 1920, height: 1080, primary: false }];
+  return invoke<MonitorTarget[]>("list_monitors");
+}
+
 // A JPEG data URL of the window at most `maxWidth` wide; "blank" when the window draws nothing
 // (fully transparent or black, so it isn't worth listing); null outside the shell or when no frame
 // came (minimized windows don't render).
@@ -32,6 +42,15 @@ export async function captureThumbnail(id: number, maxWidth: number): Promise<st
   if (!inShell) return null;
   try {
     return (await invoke<string | null>("capture_thumbnail", { id, maxWidth })) ?? "blank";
+  } catch {
+    return null;
+  }
+}
+
+export async function captureMonitorThumbnail(id: number, maxWidth: number): Promise<string | "blank" | null> {
+  if (!inShell) return null;
+  try {
+    return (await invoke<string | null>("capture_monitor_thumbnail", { id, maxWidth })) ?? "blank";
   } catch {
     return null;
   }

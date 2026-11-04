@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { QualityPicker, useShareQuality } from "../../ui/QualityPicker";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { SidebarGlyph } from "../../ui/SidebarGlyph";
-import { inShell, listWindows, type CaptureTarget } from "./native";
+import { GoLiveSheet } from "./GoLiveSheet";
+import { inShell } from "./native";
+import { Sheet } from "./Sheet";
 import {
   addInvite,
   loadServers,
@@ -405,97 +406,5 @@ function JoinSheet(props: { onClose: () => void; onJoin: (invite: NonNullable<Re
         </div>
       </form>
     </Sheet>
-  );
-}
-
-function GoLiveSheet(props: { roomName: string; onClose: () => void }) {
-  const [targets, setTargets] = useState<CaptureTarget[] | null>(null);
-  const [picked, setPicked] = useState<number | null>(null);
-  const [appAudio, setAppAudio] = useState(true);
-  const quality = useShareQuality();
-  const [note, setNote] = useState("");
-
-  useEffect(() => {
-    listWindows()
-      .then((list) => {
-        // Fullscreen apps are almost always the game you mean.
-        const sorted = [...list].sort((a, b) => Number(b.fullscreen) - Number(a.fullscreen));
-        setTargets(sorted);
-        setPicked(sorted[0]?.id ?? null);
-      })
-      .catch((e) => setNote(String(e)));
-  }, []);
-
-  const target = targets?.find((t) => t.id === picked);
-
-  return (
-    <Sheet title={`Go live in #${props.roomName}`} onClose={props.onClose} wide>
-      <div className="stack">
-        <ul className="targets" role="listbox" aria-label="What to stream">
-          {targets === null && <li className="muted small">Looking for windows…</li>}
-          {targets?.map((t) => (
-            <li key={t.id}>
-              <button
-                type="button"
-                role="option"
-                aria-selected={t.id === picked}
-                className={t.id === picked ? "target active" : "target"}
-                onClick={() => setPicked(t.id)}
-              >
-                <span className="target-icon" aria-hidden="true">{t.title.slice(0, 1)}</span>
-                <span className="target-text">
-                  <span className="target-title">{t.title}</span>
-                  <span className="muted small">{t.exe}</span>
-                </span>
-                {t.fullscreen && <span className="tag">Fullscreen</span>}
-              </button>
-            </li>
-          ))}
-        </ul>
-
-        <label className="check">
-          <input type="checkbox" checked={appAudio} onChange={(e) => setAppAudio(e.target.checked)} />
-          <span>
-            Only {target?.title ?? "this app"}'s sound
-            <span className="muted small"> · Discord, music and everything else stay out of the stream</span>
-          </span>
-        </label>
-
-        <div className="row spread">
-          <div className="row">
-            <QualityPicker quality={quality} />
-          </div>
-          <button
-            type="button"
-            className="go-live"
-            disabled={!target}
-            onClick={() => setNote("Native capture isn't built yet. It's the next milestone; this sheet is the UI for it.")}
-          >
-            <span className="rec" aria-hidden="true" />
-            Go live
-          </button>
-        </div>
-        {note && <p className="small warn">{note}</p>}
-      </div>
-    </Sheet>
-  );
-}
-
-function Sheet(props: { title: string; onClose: () => void; wide?: boolean; children: ReactNode }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && props.onClose();
-    addEventListener("keydown", onKey);
-    return () => removeEventListener("keydown", onKey);
-  }, [props.onClose]);
-  return (
-    <div className="scrim" onMouseDown={(e) => e.target === e.currentTarget && props.onClose()}>
-      <section className={props.wide ? "sheet wide" : "sheet"} role="dialog" aria-label={props.title}>
-        <header className="row spread">
-          <h2>{props.title}</h2>
-          <button type="button" className="quiet" onClick={props.onClose}>Close</button>
-        </header>
-        {props.children}
-      </section>
-    </div>
   );
 }

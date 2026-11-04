@@ -1,5 +1,5 @@
-//! Top-level windows the user could stream: visible, titled, not cloaked (hidden UWP shells,
-//! other virtual desktops) and not tool windows.
+//! What the user could stream: top-level windows (visible, titled, not cloaked hidden UWP shells
+//! or other virtual desktops, not tool windows) and whole monitors.
 
 use serde::Serialize;
 
@@ -10,20 +10,38 @@ pub struct CaptureTarget {
     exe: String,
     pid: u32,
     fullscreen: bool,
+    /// The program's icon as a PNG data URL.
+    icon: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct MonitorTarget {
+    id: isize,
+    width: i32,
+    height: i32,
+    primary: bool,
 }
 
 #[tauri::command]
-pub fn list_windows() -> Vec<CaptureTarget> {
-    imp::list()
+pub async fn list_windows() -> Vec<CaptureTarget> {
+    // Icon extraction touches the shell; keep it off the UI thread.
+    tauri::async_runtime::spawn_blocking(imp::list).await.unwrap_or_default()
+}
+
+#[tauri::command]
+pub fn list_monitors() -> Vec<MonitorTarget> {
+    imp::monitors()
 }
 
 #[cfg(windows)]
 mod imp {
-    use super::CaptureTarget;
+    use super::{CaptureTarget, MonitorTarget};
     use windows::core::{BOOL, PWSTR};
     use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, RECT};
     use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
-    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+    use windows::Win32::Graphics::Gdi::{
+        EnumDisplayMonitors, GetMonitorInfoW, MonitorFromWindow, HDC, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    };
     use windows::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
     };
@@ -37,9 +55,32 @@ mod imp {
         unsafe {
             let _ = EnumWindows(Some(collect), LPARAM(&mut out as *mut _ as isize));
         }
+        // Streaming stream itself (this copy or another one running) only makes a hall of mirrors.
         let own = std::process::id();
-        out.retain(|t| t.pid != own);
+        let own_exe = std::env::current_exe().ok().and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()));
+        out.retain(|t| t.pid != own && Some(t.exe.to_lowercase()) != own_exe);
         out
+    }
+
+    pub fn monitors() -> Vec<MonitorTarget> {
+        let mut out: Vec<MonitorTarget> = Vec::new();
+        unsafe {
+            let _ = EnumDisplayMonitors(None, None, Some(collect_monitor), LPARAM(&mut out as *mut _ as isize));
+        }
+        // Main screen first, then left to right as Windows enumerates them.
+        out.sort_by_key(|m| !m.primary);
+        out
+    }
+
+    unsafe extern "system" fn collect_monitor(monitor: HMONITOR, _: HDC, _: *mut RECT, lparam: LPARAM) -> BOOL {
+        let out = &mut *(lparam.0 as *mut Vec<MonitorTarget>);
+        let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+        if GetMonitorInfoW(monitor, &mut info).as_bool() {
+            let r = info.rcMonitor;
+            // MONITORINFOF_PRIMARY
+            out.push(MonitorTarget { id: monitor.0 as isize, width: r.right - r.left, height: r.bottom - r.top, primary: info.dwFlags & 1 != 0 });
+        }
+        true.into()
     }
 
     unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> BOOL {
@@ -89,10 +130,13 @@ mod imp {
         let mut pid = 0u32;
         GetWindowThreadProcessId(hwnd, Some(&mut pid));
 
-        Some(CaptureTarget { id: hwnd.0 as isize, title, exe: exe_name(pid), pid, fullscreen: covers_monitor(hwnd) })
+        let path = exe_path(pid);
+        let exe = path.rsplit('\\').next().unwrap_or_default().to_string();
+        let icon = crate::icons::exe_icon(&path);
+        Some(CaptureTarget { id: hwnd.0 as isize, title, exe, pid, fullscreen: covers_monitor(hwnd), icon })
     }
 
-    unsafe fn exe_name(pid: u32) -> String {
+    unsafe fn exe_path(pid: u32) -> String {
         let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
             return String::new();
         };
@@ -103,8 +147,7 @@ mod imp {
         if !ok {
             return String::new();
         }
-        let path = String::from_utf16_lossy(&buf[..size as usize]);
-        path.rsplit('\\').next().unwrap_or_default().to_string()
+        String::from_utf16_lossy(&buf[..size as usize])
     }
 
     // Exclusive and borderless fullscreen both leave the window exactly covering its monitor.
@@ -126,6 +169,10 @@ mod imp {
 #[cfg(not(windows))]
 mod imp {
     pub fn list() -> Vec<super::CaptureTarget> {
+        Vec::new()
+    }
+
+    pub fn monitors() -> Vec<super::MonitorTarget> {
         Vec::new()
     }
 }

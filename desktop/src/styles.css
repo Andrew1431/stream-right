@@ -602,6 +602,70 @@ select {
   white-space: nowrap;
 }
 
+img.target-icon {
+  padding: 3px;
+  object-fit: contain;
+}
+
+.target-thumb {
+  flex: none;
+  width: 96px;
+  height: 54px;
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--well);
+  box-shadow: 0 0 0 1px var(--seam);
+}
+
+.target-thumb img,
+.screen-well img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* Screens: a row of small monitors, each a recessed well holding its live preview */
+.screens {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 10px;
+}
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--seam);
+  border-radius: 10px;
+  background: var(--graphite-deep);
+  box-shadow: inset 0 1px 3px rgb(0 0 0 / 0.6), 0 1px 0 var(--edge);
+  color: var(--platinum-lo);
+  font-weight: 500;
+  text-align: left;
+}
+
+.screen:hover {
+  filter: none;
+  color: var(--platinum);
+}
+
+.screen.active {
+  background: linear-gradient(180deg, var(--steel-hi), var(--steel-lo));
+  box-shadow: var(--machined), inset 0 0 0 1px rgb(255 255 255 / 0.18);
+  color: var(--platinum);
+}
+
+.screen-well {
+  display: block;
+  aspect-ratio: 16 / 9;
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--well);
+  box-shadow: 0 0 0 1px var(--seam);
+}
+
 .tag {
   flex: none;
   padding: 2px 8px;

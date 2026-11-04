@@ -6,9 +6,23 @@
 /// Errors when no frame arrives, e.g. for minimized windows.
 #[tauri::command]
 pub async fn capture_thumbnail(id: isize, max_width: u32) -> Result<Option<String>, String> {
-    tauri::async_runtime::spawn_blocking(move || imp::thumbnail(id, max_width))
+    tauri::async_runtime::spawn_blocking(move || imp::thumbnail(Target::Window(id), max_width))
         .await
         .map_err(|e| e.to_string())?
+}
+
+/// The same for a whole monitor (an HMONITOR from `list_monitors`).
+#[tauri::command]
+pub async fn capture_monitor_thumbnail(id: isize, max_width: u32) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || imp::thumbnail(Target::Monitor(id), max_width))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[derive(Clone, Copy)]
+pub enum Target {
+    Window(isize),
+    Monitor(isize),
 }
 
 /// A captured frame already box-shrunk to roughly the thumbnail size, as packed RGB.
@@ -42,7 +56,7 @@ impl Frame {
 
 #[cfg(windows)]
 mod imp {
-    use super::Frame;
+    use super::{Frame, Target};
     use std::sync::{Mutex, Once};
     use std::time::{Duration, Instant};
     use windows::core::{factory, Interface};
@@ -52,6 +66,7 @@ mod imp {
     use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
     use windows::Graphics::DirectX::DirectXPixelFormat;
     use windows::Win32::Foundation::{HMODULE, HWND};
+    use windows::Win32::Graphics::Gdi::HMONITOR;
     use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
     use windows::Win32::Graphics::Direct3D11::{
         D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_BOX,
@@ -66,8 +81,8 @@ mod imp {
 
     const FIRST_FRAME_TIMEOUT: Duration = Duration::from_millis(1000);
 
-    pub fn thumbnail(id: isize, max_width: u32) -> Result<Option<String>, String> {
-        let frame = grab(id, max_width)?;
+    pub fn thumbnail(target: Target, max_width: u32) -> Result<Option<String>, String> {
+        let frame = grab(target, max_width)?;
         if frame.blank {
             return Ok(None);
         }
@@ -77,9 +92,9 @@ mod imp {
     // One device for the app's lifetime; the lock also serializes use of its immediate context.
     static DEVICE: Mutex<Option<ID3D11Device>> = Mutex::new(None);
 
-    fn grab(id: isize, max_width: u32) -> Result<Frame, String> {
+    fn grab(target: Target, max_width: u32) -> Result<Frame, String> {
         let mut device = DEVICE.lock().unwrap_or_else(|e| e.into_inner());
-        let result = unsafe { grab_inner(&mut device, HWND(id as _), max_width) };
+        let result = unsafe { grab_inner(&mut device, target, max_width) };
         if result.is_err() {
             *device = None; // could be a removed device (driver reset); rebuild next time
         }
@@ -113,9 +128,11 @@ mod imp {
         });
     }
 
-    unsafe fn grab_inner(cached: &mut Option<ID3D11Device>, hwnd: HWND, max_width: u32) -> windows::core::Result<Frame> {
-        if !IsWindow(Some(hwnd)).as_bool() {
-            return Err(windows::core::Error::new(windows::Win32::Foundation::E_INVALIDARG, "not a window"));
+    unsafe fn grab_inner(cached: &mut Option<ID3D11Device>, target: Target, max_width: u32) -> windows::core::Result<Frame> {
+        if let Target::Window(id) = target {
+            if !IsWindow(Some(HWND(id as _))).as_bool() {
+                return Err(windows::core::Error::new(windows::Win32::Foundation::E_INVALIDARG, "not a window"));
+            }
         }
         // Blocking-pool threads have no apartment yet; an already-initialized one returns an ignorable error.
         let _ = RoInitialize(RO_INIT_MULTITHREADED);
@@ -129,7 +146,10 @@ mod imp {
         let winrt_device: IDirect3DDevice = CreateDirect3D11DeviceFromDXGIDevice(&device.cast::<IDXGIDevice>()?)?.cast()?;
 
         let interop = factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
-        let item: GraphicsCaptureItem = interop.CreateForWindow(hwnd)?;
+        let item: GraphicsCaptureItem = match target {
+            Target::Window(id) => interop.CreateForWindow(HWND(id as _))?,
+            Target::Monitor(id) => interop.CreateForMonitor(HMONITOR(id as _))?,
+        };
         let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
             &winrt_device,
             DirectXPixelFormat::B8G8R8A8UIntNormalized,
@@ -237,7 +257,7 @@ mod imp {
 
 #[cfg(not(windows))]
 mod imp {
-    pub fn thumbnail(_id: isize, _max_width: u32) -> Result<Option<String>, String> {
+    pub fn thumbnail(_target: super::Target, _max_width: u32) -> Result<Option<String>, String> {
         Err("window capture is only implemented on Windows".into())
     }
 }
