@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 // When the stream desktop app shows a room, it loads this page in a frame with ?embed=desktop.
 // The room keeps its own top bar and talks to the app over postMessage: the app owns the
@@ -10,7 +10,7 @@ export const inDesktop =
 // Bumped only for breaking changes, so the app can tell an out-of-date server apart.
 export const BRIDGE_VERSION = 1;
 
-export type ShellRequest = "ready" | "toggle-sidebar" | "go-live" | "leave" | "forget";
+export type ShellRequest = "ready" | "toggle-sidebar" | "go-live" | "stop-live" | "leave" | "forget";
 
 export type ShellState = {
   sidebarHidden: boolean;
@@ -18,6 +18,8 @@ export type ShellState = {
   liveElsewhere: boolean;
   // The creator key the app holds for this server, if any.
   creatorKey: string;
+  // The app is streaming natively into this room.
+  live: boolean;
 };
 
 export function askShell(type: ShellRequest) {
@@ -29,14 +31,36 @@ export function askShell(type: ShellRequest) {
 // speaks the bridge; the room says it again once it can take the app's state.
 askShell("ready");
 
+// The app asks for the room's WHIP endpoint and OBS token when you press Go live in it. Anyone who
+// can frame this page already has the invite link, which lets them share anyway.
+export function useWhipHandoff(getToken: () => Promise<string>, whipUrl: string) {
+  const latest = useRef(getToken);
+  latest.current = getToken;
+  useEffect(() => {
+    if (!inDesktop) return;
+    const onMessage = async (e: MessageEvent) => {
+      if (e.source !== window.parent || e.data?.source !== "stream-shell" || e.data.type !== "get-whip") return;
+      const reply = (body: object) =>
+        (e.source as Window).postMessage({ source: "stream-room", v: BRIDGE_VERSION, type: "whip", id: e.data.id, ...body }, e.origin);
+      try {
+        reply({ endpoint: whipUrl, token: await latest.current() });
+      } catch (err) {
+        reply({ error: err instanceof Error ? err.message : String(err) });
+      }
+    };
+    addEventListener("message", onMessage);
+    return () => removeEventListener("message", onMessage);
+  }, [whipUrl]);
+}
+
 export function useShell(): ShellState | null {
   const [state, setState] = useState<ShellState | null>(null);
   useEffect(() => {
     if (!inDesktop) return;
     const onMessage = (e: MessageEvent) => {
       if (e.source !== window.parent || e.data?.source !== "stream-shell" || e.data.type !== "state") return;
-      const { sidebarHidden, liveElsewhere, creatorKey } = e.data;
-      setState({ sidebarHidden: !!sidebarHidden, liveElsewhere: !!liveElsewhere, creatorKey: String(creatorKey ?? "") });
+      const { sidebarHidden, liveElsewhere, creatorKey, live } = e.data;
+      setState({ sidebarHidden: !!sidebarHidden, liveElsewhere: !!liveElsewhere, creatorKey: String(creatorKey ?? ""), live: !!live });
     };
     // Keys pressed in the room never reach the app window, so the room forwards its shortcut.
     const onKey = (e: KeyboardEvent) => {

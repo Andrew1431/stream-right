@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { SidebarGlyph } from "../../ui/SidebarGlyph";
 import { GoLiveSheet } from "./GoLiveSheet";
+import { onLiveEvent, startLive, stopLive, type LiveEvent, type Whip } from "./live";
 import { inShell } from "./native";
 import { NewRoomSheet, RoomMenu, ServerUsage } from "./OwnerTools";
 import { Sheet } from "./Sheet";
@@ -27,6 +28,8 @@ const COLLAPSED_STORE = "sidebarCollapsed";
 const MIN_BRIDGE = 1;
 // A room that hasn't said hello by then is on a server from before the bridge.
 const BRIDGE_WAIT_MS = 4000;
+// Making a token can take a round trip to the room server.
+const WHIP_WAIT_MS = 10_000;
 
 type Selection = { origin: string; room: string | null };
 
@@ -41,6 +44,26 @@ export function App() {
   });
   const [joining, setJoining] = useState(servers.length === 0);
   const [goLive, setGoLive] = useState(false);
+  // The one native stream this app runs, and the room it's going into.
+  const [live, setLive] = useState<{ origin: string; room: string; event: LiveEvent } | null>(null);
+  const [liveError, setLiveError] = useState("");
+  const requestWhip = useRef<(() => Promise<Whip>) | null>(null);
+  useEffect(
+    () =>
+      onLiveEvent((event) => {
+        if (event.state === "stopped") {
+          setLive(null);
+          if (event.error) setLiveError(event.error);
+          return;
+        }
+        setLive((l) => (l ? { ...l, event } : l));
+      }),
+    [],
+  );
+  async function stopStreaming() {
+    setLive(null);
+    await stopLive().catch((e) => setLiveError(String(e)));
+  }
   const [editingServer, setEditingServer] = useState(false);
   const [makingRoom, setMakingRoom] = useState(false);
   const [menu, setMenu] = useState<{ room: string; x: number; y: number } | null>(null);
@@ -185,8 +208,11 @@ export function App() {
             creatorKey={server.creatorKey ?? ""}
             sidebarHidden={hidden}
             liveElsewhere={liveElsewhere}
+            live={!!live && live.origin === server.origin && live.room === room.id}
+            whip={requestWhip}
             onToggleSidebar={toggleSidebar}
             onGoLive={() => setGoLive(true)}
+            onStopLive={stopStreaming}
             onLeave={() => select({ origin: server.origin, room: null })}
             onForget={() => forget(server, room)}
           />
@@ -249,7 +275,32 @@ export function App() {
           }}
         />
       )}
-      {goLive && room && <GoLiveSheet roomName={room.id} onClose={() => setGoLive(false)} />}
+      {goLive && server && room && (
+        <GoLiveSheet
+          roomName={room.id}
+          onClose={() => setGoLive(false)}
+          onStart={async (source, audio, settings, sourceHeight) => {
+            const ask = requestWhip.current;
+            if (!ask) throw new Error("The room is still loading");
+            const whip = await ask();
+            setLiveError("");
+            setLive({ origin: server.origin, room: room.id, event: { state: "connecting" } });
+            try {
+              await startLive(whip, source, audio, settings, sourceHeight);
+            } catch (e) {
+              setLive(null);
+              throw e;
+            }
+            setGoLive(false);
+          }}
+        />
+      )}
+      {liveError && (
+        <div className="live-error" role="alert">
+          <span>Streaming stopped: {liveError}</span>
+          <button type="button" className="quiet" onClick={() => setLiveError("")}>Dismiss</button>
+        </div>
+      )}
     </div>
   );
 }
@@ -297,8 +348,12 @@ function RoomFrame(props: {
   creatorKey: string;
   sidebarHidden: boolean;
   liveElsewhere: boolean;
+  live: boolean;
+  // Set to a function that asks the room for its WHIP endpoint and token.
+  whip: { current: (() => Promise<Whip>) | null };
   onToggleSidebar: () => void;
   onGoLive: () => void;
+  onStopLive: () => void;
   onLeave: () => void;
   onForget: () => void;
 }) {
@@ -308,6 +363,23 @@ function RoomFrame(props: {
   const [hello, setHello] = useState(0);
   const latest = useRef(props);
   latest.current = props;
+  const whipWaiters = useRef(new Map<number, { resolve: (w: Whip) => void; reject: (e: Error) => void }>());
+
+  useEffect(() => {
+    let next = 0;
+    props.whip.current = () =>
+      new Promise<Whip>((resolve, reject) => {
+        const id = ++next;
+        whipWaiters.current.set(id, { resolve, reject });
+        frame.current?.contentWindow?.postMessage({ source: "stream-shell", type: "get-whip", id }, latest.current.origin);
+        setTimeout(() => {
+          if (whipWaiters.current.delete(id)) reject(new Error("This server's stream is too old to stream from the app. Its owner can update it."));
+        }, WHIP_WAIT_MS);
+      });
+    return () => {
+      props.whip.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     const timer = setTimeout(() => setBridge((b) => (b === "waiting" ? "old" : b)), BRIDGE_WAIT_MS);
@@ -327,6 +399,19 @@ function RoomFrame(props: {
         case "go-live":
           p.onGoLive();
           break;
+        case "stop-live":
+          p.onStopLive();
+          break;
+        case "whip": {
+          const waiter = whipWaiters.current.get(e.data.id);
+          whipWaiters.current.delete(e.data.id);
+          if (!waiter) break;
+          if (e.data.error) waiter.reject(new Error(String(e.data.error)));
+          else if (typeof e.data.endpoint === "string" && typeof e.data.token === "string" && e.data.endpoint.startsWith(p.origin + "/"))
+            waiter.resolve({ endpoint: e.data.endpoint, token: e.data.token });
+          else waiter.reject(new Error("The room sent a bad stream address"));
+          break;
+        }
         case "leave":
           p.onLeave();
           break;
@@ -346,10 +431,10 @@ function RoomFrame(props: {
   useEffect(() => {
     if (bridge !== "ok") return;
     frame.current?.contentWindow?.postMessage(
-      { source: "stream-shell", type: "state", sidebarHidden: props.sidebarHidden, liveElsewhere: props.liveElsewhere, creatorKey: props.creatorKey },
+      { source: "stream-shell", type: "state", sidebarHidden: props.sidebarHidden, liveElsewhere: props.liveElsewhere, creatorKey: props.creatorKey, live: props.live },
       props.origin,
     );
-  }, [bridge, hello, props.sidebarHidden, props.liveElsewhere, props.creatorKey, props.origin]);
+  }, [bridge, hello, props.sidebarHidden, props.liveElsewhere, props.creatorKey, props.origin, props.live]);
 
   const label = props.sidebarHidden ? "Show servers and rooms (Ctrl+B)" : "Hide servers and rooms (Ctrl+B)";
   return (
@@ -365,10 +450,14 @@ function RoomFrame(props: {
             <span className="muted small" title="Its owner can update it to get the app's layout">This server's stream is older than the app</span>
           </div>
           <div className="row">
-            <button type="button" className="go-live compact" onClick={props.onGoLive}>
-              <span className="rec" aria-hidden="true" />
-              Go live
-            </button>
+            {props.live ? (
+              <button type="button" className="danger" onClick={props.onStopLive}>Stop streaming</button>
+            ) : (
+              <button type="button" className="go-live compact" onClick={props.onGoLive}>
+                <span className="rec" aria-hidden="true" />
+                Go live
+              </button>
+            )}
             <button type="button" className="quiet" onClick={props.onLeave}>Leave</button>
             <button type="button" className="quiet" onClick={props.onForget}>Forget room</button>
           </div>

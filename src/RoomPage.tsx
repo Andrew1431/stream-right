@@ -6,9 +6,9 @@ import { RoomConnection, type RoomStatus } from "./connection";
 import { QualityPicker, useShareQuality } from "../ui/QualityPicker";
 import { SidebarGlyph } from "../ui/SidebarGlyph";
 import { gb } from "../ui/usage";
-import { askShell, inDesktop, useShell } from "./desktop";
+import { askShell, inDesktop, useShell, useWhipHandoff } from "./desktop";
 import { Publisher, settingsLabel, Subscriber, type Layer } from "./media";
-import { forgetObsKey, loadObsKey, ObsPanel, obsKeyId } from "./ObsPanel";
+import { ensureObsKey, forgetObsKey, loadObsKey, ObsPanel, obsKeyId } from "./ObsPanel";
 import { SelfPreview, useHiddenFor, usePageActive } from "./SelfPreview";
 import { rememberRoom } from "./recent";
 import { load, save } from "./storage";
@@ -236,6 +236,13 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
   useEffect(() => {
     if (status.kind === "connected" && obsKey) conn.request({ op: "claimObs", obsKey }).catch(() => {});
   }, [conn, status.kind, epoch, obsKey]);
+
+  useWhipHandoff(async () => {
+    if (status.kind !== "connected") throw new Error("Not connected to the room yet");
+    const key = await ensureObsKey(conn, props.roomId, noClips);
+    if (key !== obsKey) setObsKey(key);
+    return key;
+  }, `${location.origin}/api/rooms/${props.roomId}/whip`);
 
   const isMine = (m: Member) =>
     m.id === you ||
@@ -524,6 +531,10 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
           {localStream ? (
             <button type="button" className="danger" onClick={stopShare}>
               Stop sharing ({captured || settingsLabel(settings)})
+            </button>
+          ) : inDesktop && shell?.live ? (
+            <button type="button" className="danger" onClick={() => askShell("stop-live")}>
+              Stop streaming
             </button>
           ) : inDesktop ? (
             // The app's native Go live replaces the browser picker; it's still in the ⋮ menu.

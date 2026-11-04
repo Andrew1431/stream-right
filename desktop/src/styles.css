@@ -758,3 +758,26 @@ img.target-icon {
 .sheet .usage-note {
   margin: 0 0 16px;
 }
+
+.frame-bar button.danger {
+  background: var(--tally);
+  color: #fff;
+}
+
+.live-error {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 40;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  max-width: 480px;
+  padding: 10px 12px;
+  border: 1px solid var(--tally);
+  border-radius: 8px;
+  background: var(--steel);
+  color: var(--platinum);
+  box-shadow: var(--float);
+  font-size: 13px;
+}

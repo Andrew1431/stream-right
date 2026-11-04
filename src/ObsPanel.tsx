@@ -13,6 +13,16 @@ const keyStore = (roomId: string) => `obsKey:${roomId}`;
 export const loadObsKey = (roomId: string) => load(keyStore(roomId), "");
 export const forgetObsKey = (roomId: string) => remove(keyStore(roomId));
 
+// The room's OBS token, made on first use. The desktop app streams with it too.
+export async function ensureObsKey(conn: RoomConnection, roomId: string, noClips: boolean): Promise<string> {
+  const existing = loadObsKey(roomId);
+  if (existing) return existing;
+  const res = await conn.request({ op: "obsKey", noClips });
+  if (!res.obsKey) throw new Error("No key returned");
+  save(keyStore(roomId), res.obsKey);
+  return res.obsKey;
+}
+
 // SHA-256 prefix the server shows on OBS members, so we can tell which OBS stream is ours.
 export async function obsKeyId(key: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));

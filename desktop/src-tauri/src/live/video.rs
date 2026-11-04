@@ -462,6 +462,8 @@ mod imp {
     /// The D3D11 device everything runs on, multithread-protected because the encoder uses it
     /// from its own threads.
     struct Gpu {
+        // Held so the device outlives everything created from it.
+        #[allow(dead_code)]
         device: ID3D11Device,
         context: ID3D11DeviceContext,
         winrt: IDirect3DDevice,

@@ -13,7 +13,7 @@
 //! Opus comes from `unsafe-libopus`, libopus 1.3 transpiled to Rust: it builds without CMake or a
 //! C compiler (the libopus `-sys` crates all need CMake, which isn't on PATH here).
 
-use super::{AudioMode, AudioTx, Clock, Stage};
+use super::{AudioMode, AudioTx, Clock, EncodedAudio, Stage};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -22,11 +22,21 @@ use std::time::Duration;
 /// continuous for the receiver.
 pub fn start(mode: AudioMode, clock: Clock, tx: AudioTx) -> Result<Stage, String> {
     if let AudioMode::Off = mode {
-        // Hold the sender until stopped so the receiver doesn't read "audio ended".
+        // Send silence rather than nothing: the SFU only knows a track once packets flow, and
+        // viewers pulling a silent-but-unsent track get "track not found".
         return Stage::spawn("audio-off", move |stop| {
-            let _tx = tx;
+            // A 20 ms fullband CELT stereo frame of digital silence.
+            const SILENCE: [u8; 3] = [0xFC, 0xFF, 0xFE];
+            let mut next = clock.now_us();
             while !stop.load(Ordering::Relaxed) {
-                std::thread::sleep(Duration::from_millis(50));
+                if tx.send(EncodedAudio { data: SILENCE.to_vec(), pts_us: next }).is_err() {
+                    return;
+                }
+                next += 20_000;
+                let now = clock.now_us();
+                if next > now {
+                    std::thread::sleep(Duration::from_micros(next - now));
+                }
             }
         })
         .map_err(|e| e.to_string());

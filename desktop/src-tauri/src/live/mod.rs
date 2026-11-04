@@ -15,6 +15,7 @@
 //! [`Stage`] handle is stopped or dropped, or when the channel they send into closes.
 
 pub mod audio;
+pub mod session;
 pub mod video;
 pub mod whip;
 

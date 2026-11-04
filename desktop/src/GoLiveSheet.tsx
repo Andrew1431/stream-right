@@ -8,6 +8,8 @@ import {
   type CaptureTarget,
   type MonitorTarget,
 } from "./native";
+import type { ShareSettings } from "../../ui/presets";
+import type { LiveAudio, LiveSource } from "./live";
 import { Sheet } from "./Sheet";
 
 const THUMB_WIDTH = 320;
@@ -16,7 +18,11 @@ const REFRESH_MS = 5000;
 
 type Pick = { kind: "monitor"; id: number } | { kind: "window"; id: number };
 
-export function GoLiveSheet(props: { roomName: string; onClose: () => void }) {
+export function GoLiveSheet(props: {
+  roomName: string;
+  onClose: () => void;
+  onStart: (source: LiveSource, audio: LiveAudio, settings: ShareSettings, sourceHeight: number) => Promise<void>;
+}) {
   const [monitors, setMonitors] = useState<MonitorTarget[]>([]);
   const [windows, setWindows] = useState<CaptureTarget[] | null>(null);
   const [thumbs, setThumbs] = useState<Record<string, string | "blank" | null>>({});
@@ -24,6 +30,7 @@ export function GoLiveSheet(props: { roomName: string; onClose: () => void }) {
   const [sound, setSound] = useState(true);
   const quality = useShareQuality();
   const [note, setNote] = useState("");
+  const [starting, setStarting] = useState(false);
 
   useEffect(() => {
     let stopped = false;
@@ -59,6 +66,29 @@ export function GoLiveSheet(props: { roomName: string; onClose: () => void }) {
   const shown = windows?.filter((w) => thumbs[`w${w.id}`] !== "blank") ?? null;
   const pickedWindow = picked?.kind === "window" ? windows?.find((w) => w.id === picked.id) : undefined;
   const pickedMonitor = picked?.kind === "monitor" ? monitors.find((m) => m.id === picked.id) : undefined;
+
+  async function start() {
+    let source: LiveSource;
+    let audio: LiveAudio = { kind: "off" };
+    let sourceHeight = 1080;
+    if (pickedMonitor) {
+      source = { kind: "monitor", id: pickedMonitor.id };
+      if (sound) audio = { kind: "allExceptVoice" };
+      sourceHeight = pickedMonitor.height;
+    } else if (pickedWindow) {
+      source = { kind: "window", id: pickedWindow.id, pid: pickedWindow.pid };
+      if (sound) audio = { kind: "app", pid: pickedWindow.pid };
+    } else return;
+    setStarting(true);
+    setNote("");
+    try {
+      await props.onStart(source, audio, quality.settings, sourceHeight);
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setStarting(false);
+    }
+  }
 
   return (
     <Sheet title={`Go live in #${props.roomName}`} onClose={props.onClose} wide>
@@ -147,11 +177,11 @@ export function GoLiveSheet(props: { roomName: string; onClose: () => void }) {
           <button
             type="button"
             className="go-live"
-            disabled={!picked}
-            onClick={() => setNote("Native streaming is being built; this sheet is its UI.")}
+            disabled={(!pickedWindow && !pickedMonitor) || starting}
+            onClick={start}
           >
             <span className="rec" aria-hidden="true" />
-            Go live
+            {starting ? "Starting…" : "Go live"}
           </button>
         </div>
         {note && <p className="small warn">{note}</p>}
