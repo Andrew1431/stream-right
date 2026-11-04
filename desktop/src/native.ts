@@ -24,3 +24,15 @@ export async function listWindows(): Promise<CaptureTarget[]> {
   if (!inShell) return SAMPLE;
   return invoke<CaptureTarget[]>("list_windows");
 }
+
+// A JPEG data URL of the window at most `maxWidth` wide; "blank" when the window draws nothing
+// (fully transparent or black, so it isn't worth listing); null outside the shell or when no frame
+// came (minimized windows don't render).
+export async function captureThumbnail(id: number, maxWidth: number): Promise<string | "blank" | null> {
+  if (!inShell) return null;
+  try {
+    return (await invoke<string | null>("capture_thumbnail", { id, maxWidth })) ?? "blank";
+  } catch {
+    return null;
+  }
+}
