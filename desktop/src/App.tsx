@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { SidebarGlyph } from "../../ui/SidebarGlyph";
+import { onDeepLink } from "./deeplink";
 import { GoLiveSheet } from "./GoLiveSheet";
 import { useUpdates } from "./updates";
 import { onLiveEvent, startLive, stopLive, type LiveEvent, type Whip } from "./live";
@@ -8,6 +9,7 @@ import { NewRoomSheet, RoomMenu, ServerUsage } from "./OwnerTools";
 import { Sheet } from "./Sheet";
 import {
   addInvite,
+  inviteLink,
   loadServers,
   parseInvite,
   peek,
@@ -45,6 +47,16 @@ export function App() {
     }
   });
   const [joining, setJoining] = useState(servers.length === 0);
+  // An invite from a stream-desktop:// link, shown in the join sheet for the user to confirm.
+  const [joinLink, setJoinLink] = useState("");
+  useEffect(
+    () =>
+      onDeepLink((invite) => {
+        setJoinLink(inviteLink(invite.origin, invite.room));
+        setJoining(true);
+      }),
+    [],
+  );
   const [goLive, setGoLive] = useState(false);
   // The one native stream this app runs, and the room it's going into.
   const [live, setLive] = useState<{ origin: string; room: string; event: LiveEvent } | null>(null);
@@ -244,11 +256,17 @@ export function App() {
 
       {joining && (
         <JoinSheet
-          onClose={() => setJoining(false)}
+          key={joinLink}
+          initial={joinLink}
+          onClose={() => {
+            setJoining(false);
+            setJoinLink("");
+          }}
           onJoin={(invite) => {
             update(addInvite(servers, invite));
             select({ origin: invite.origin, room: invite.room.id });
             setJoining(false);
+            setJoinLink("");
           }}
         />
       )}
@@ -526,8 +544,12 @@ function ServerSheet(props: { server: Server; onClose: () => void; onSave: (crea
   );
 }
 
-function JoinSheet(props: { onClose: () => void; onJoin: (invite: NonNullable<ReturnType<typeof parseInvite>>) => void }) {
-  const [text, setText] = useState("");
+function JoinSheet(props: {
+  initial: string;
+  onClose: () => void;
+  onJoin: (invite: NonNullable<ReturnType<typeof parseInvite>>) => void;
+}) {
+  const [text, setText] = useState(props.initial);
   const invite = parseInvite(text);
 
   function submit(e: FormEvent) {

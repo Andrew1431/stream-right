@@ -36,6 +36,11 @@
     "createUpdaterArtifacts": true
   },
   "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["stream-desktop"]
+      }
+    },
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEIyOUFCOTgyOERGNUU2QkUKUldTKzV2V05ncm1hc21DQU52TVpUeHdrdm9LSE9jYUxobmlXQTVSNzZvdVJuVVJOSm84RitSM3IK",
       "endpoints": [

@@ -7,6 +7,14 @@ import { useEffect, useRef, useState } from "react";
 export const inDesktop =
   new URLSearchParams(location.search).get("embed") === "desktop" && window.parent !== window;
 
+// The desktop app is Windows only. Browsers can't tell whether it's installed, so the link is
+// always offered there, with a download link beside it.
+export const offerDesktopApp = !inDesktop && navigator.userAgent.includes("Windows");
+export const DESKTOP_DOWNLOAD = "https://github.com/Andrew1431/stream-right/releases/latest";
+
+// Handled by desktop/src/deeplink.ts: the app opens its join sheet with this invite filled in.
+export const desktopAppLink = (invite: string) => `stream-desktop://join?url=${encodeURIComponent(invite)}`;
+
 // Bumped only for breaking changes, so the app can tell an out-of-date server apart.
 export const BRIDGE_VERSION = 1;
 

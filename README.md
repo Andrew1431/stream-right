@@ -180,6 +180,7 @@ For Windows 10 and 11. [Download the latest release](https://github.com/Andrew14
 - **Only the sound you mean.** A window share sends just that game's sound. A screen share sends everything you hear except Discord, TeamSpeak, Mumble, Slack, Teams and Zoom.
 - **Any resolution and frame rate**, the same presets and custom choices as the browser.
 - **Creator tools.** Add your creator key for a server to make rooms, rotate links and see the month's usage from the app.
+- **Open in the desktop app.** On Windows, a room page's ⋮ menu (and each room on the home page) has **Open in the desktop app**. It opens the app, or switches to it if it's running, and offers to join that room. It works for rooms on any stream server, through the `stream-desktop://` link the installer registers.
 
 The app uses the room's OBS token behind the scenes, so the server needs nothing extra. Servers older than the app still open, with a simpler bar. To release a new version, bump `version` in `desktop/src-tauri/tauri.conf.json` and push a matching `desktop-v<version>` tag; GitHub Actions builds and publishes it, and installed apps offer the update.
 

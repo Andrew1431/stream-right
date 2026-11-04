@@ -26,6 +26,8 @@ ureq = "3"
 tauri-plugin-updater = "2.14.1"
 tauri-plugin-process = "2.4.0"
 tauri-plugin-opener = "2.7.2"
+tauri-plugin-deep-link = "2.6.3"
+tauri-plugin-single-instance = { version = "2.5.5", features = ["deep-link"] }
 
 [target.'cfg(windows)'.dependencies]
 # Native Go live sender on Windows CNG crypto (str0m is declared below).
