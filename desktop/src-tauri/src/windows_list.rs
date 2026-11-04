@@ -28,8 +28,8 @@ mod imp {
         OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetWindowLongW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
-        IsWindowVisible, GWL_EXSTYLE, WS_EX_TOOLWINDOW,
+        EnumWindows, GetWindow, GetWindowLongW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+        IsWindowVisible, GWL_EXSTYLE, GW_OWNER, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
     };
 
     pub fn list() -> Vec<CaptureTarget> {
@@ -54,12 +54,24 @@ mod imp {
         if !IsWindowVisible(hwnd).as_bool() {
             return None;
         }
-        if GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW.0 != 0 {
+        // The Alt+Tab rule: owned popups and no-activate or click-through overlays aren't apps, unless they ask to be.
+        let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+        if ex & (WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0 | WS_EX_TRANSPARENT.0) != 0 {
+            return None;
+        }
+        let owned = GetWindow(hwnd, GW_OWNER).map_or(false, |owner| !owner.is_invalid());
+        if owned && ex & WS_EX_APPWINDOW.0 == 0 {
             return None;
         }
         let mut cloaked: u32 = 0;
         let _ = DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &mut cloaked as *mut _ as *mut _, 4);
         if cloaked != 0 {
+            return None;
+        }
+
+        // Overlay helpers (Steam's "[blur]", tray popups) are visible but tiny or empty.
+        let mut rect = RECT::default();
+        if GetWindowRect(hwnd, &mut rect).is_err() || rect.right - rect.left < 200 || rect.bottom - rect.top < 150 {
             return None;
         }
 
@@ -92,7 +104,7 @@ mod imp {
             return String::new();
         }
         let path = String::from_utf16_lossy(&buf[..size as usize]);
-        path.rsplit('\').next().unwrap_or_default().to_string()
+        path.rsplit('\\').next().unwrap_or_default().to_string()
     }
 
     // Exclusive and borderless fullscreen both leave the window exactly covering its monitor.
