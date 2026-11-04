@@ -786,7 +786,27 @@ button.menu-item:focus-visible {
 }
 
 .stage.split {
-  display: grid;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.split-row {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  flex: none;
+}
+
+.split-cell {
+  display: flex;
+  flex: none;
+  min-width: 0;
+}
+
+.split-cell > .tile {
+  flex: 1;
 }
 
 .thumbs {

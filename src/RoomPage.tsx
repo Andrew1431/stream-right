@@ -17,6 +17,7 @@ import { UsagePanel, useUsage } from "./UsagePanel";
 
 const NAME_STORE = "displayName";
 const LAYOUT_STORE = "layout";
+const PREVIEW_AWAY_STORE = "previewWhileAway";
 const CLIP_BUFFER_STORE = "clipBuffer";
 const CLIP_SECONDS_STORE = "clipSeconds";
 const NO_CLIPS_STORE = "noClips";
@@ -168,7 +169,10 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
   const [tileSizes, setTileSizes] = useState<Record<string, Size>>({});
   const [sources, setSources] = useState<Record<string, { height: number; aspect: number }>>({});
   const requested = useRef(new Map<string, { index: number; at: number }>());
-  const { active: pageActive } = usePageActive();
+  const page = usePageActive();
+  // Previews pause while the window is unfocused unless you ask to keep watching yours.
+  const [previewAway, setPreviewAway] = useState(() => load<unknown>(PREVIEW_AWAY_STORE, false) === true);
+  const pageActive = previewAway ? page.visible : page.active;
   const tabHidden = useHiddenFor(HIDDEN_VIDEO_OFF_MS);
 
   // Clips
@@ -784,6 +788,19 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
                 <button type="button" className="chip" onClick={() => setObsPreview(true)}>Show preview</button>
               </div>
             ))}
+          {((localStream && me) || (myObs && obsPreview)) && (
+            <label className="check small">
+              <input
+                type="checkbox"
+                checked={previewAway}
+                onChange={(e) => {
+                  setPreviewAway(e.target.checked);
+                  save(PREVIEW_AWAY_STORE, e.target.checked);
+                }}
+              />
+              <span>Keep playing when this window isn't focused</span>
+            </label>
+          )}
           {myObs && obsPreview && (
             <button type="button" className="link small" onClick={() => setObsPreview(false)}>{appLive ? "Hide preview" : "Hide OBS preview"}</button>
           )}
@@ -795,9 +812,9 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
           {localStream ? "You're sharing. Nobody else is sharing yet." : `Nobody is sharing yet. Click ${inDesktop ? "Go live" : offerDesktopApp ? "Share screen, or Go live in the app," : "Share screen"} to start.`}
         </div>
       ) : split ? (
-        <div className="stage split" style={splitGrid(watching.length)}>
+        <SplitStage aspects={watching.map((m) => (m.stream && sources[m.stream.sessionId]?.aspect) || 16 / 9)}>
           {watching.map((m) => tile(m, "big"))}
-        </div>
+        </SplitStage>
       ) : (
         <div className={watching.length > 1 ? "stage focus with-thumbs" : "stage focus"}>
           {focused && tile(focused, "big")}
@@ -818,11 +835,64 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
   );
 }
 
-// Near-square grid: 2 → 2×1, 3–4 → 2×2, 5–6 → 3×2, …
-function splitGrid(n: number): React.CSSProperties {
-  const cols = Math.ceil(Math.sqrt(n));
-  const rows = Math.ceil(n / cols);
-  return { gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))` };
+const SPLIT_GAP = 10;
+
+// Split view: streams in rows, each tile shaped like its stream, with whichever row arrangement
+// shows the most video. An ultrawide stream gets a wide tile instead of a letterboxed 16:9 one.
+function SplitStage(props: { aspects: number[]; children: React.ReactNode[] }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const observer = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect;
+      setSize((prev) => (prev.w === width && prev.h === height ? prev : { w: width, h: height }));
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+  const rows = size.w > 0 && size.h > 0 ? fitRows(props.aspects, size.w, size.h, SPLIT_GAP) : [];
+  return (
+    <div ref={ref} className="stage split">
+      {rows.map((row, r) => (
+        <div key={r} className="split-row" style={{ height: row.height }}>
+          {row.items.map((i) => (
+            <div key={i} className="split-cell" style={{ width: row.height * props.aspects[i] }}>
+              {props.children[i]}
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Splits the tiles, in order, into rows that fill the width at their natural shape, then
+// shrinks everything to fit the height. Tries every split and keeps the one with the most area.
+export function fitRows(aspects: number[], width: number, height: number, gap: number): { items: number[]; height: number }[] {
+  const n = aspects.length;
+  let best: { items: number[]; height: number }[] = [];
+  let bestArea = -1;
+  // Bit i set: a row break after tile i.
+  for (let mask = 0; mask < 1 << Math.max(0, n - 1); mask++) {
+    const rows: number[][] = [[]];
+    for (let i = 0; i < n; i++) {
+      rows[rows.length - 1].push(i);
+      if (i < n - 1 && mask & (1 << i)) rows.push([]);
+    }
+    const natural = rows.map((items) => Math.max(0, width - gap * (items.length - 1)) / items.reduce((a, i) => a + aspects[i], 0));
+    const room = height - gap * (rows.length - 1);
+    if (room <= 0) continue;
+    const scale = Math.min(1, room / natural.reduce((a, h) => a + h, 0));
+    const heights = natural.map((h) => Math.floor(h * scale));
+    const area = rows.reduce((a, items, r) => a + items.reduce((b, i) => b + heights[r] * heights[r] * aspects[i], 0), 0);
+    if (area > bestArea) {
+      bestArea = area;
+      best = rows.map((items, r) => ({ items, height: heights[r] }));
+    }
+  }
+  return best;
 }
 
 // Stable dependency for the pull effect: changes only when the set of live streams does.
