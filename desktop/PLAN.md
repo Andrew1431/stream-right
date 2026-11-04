@@ -60,6 +60,12 @@ Tauri 2 shell (Rust + WebView2, ~10 MB)
 5. **Creator tools in the app.** Per-server creator key, the usage meter and panel (moved into `ui/`), making rooms and rotating links, all without opening the browser.
 6. **Nice to have.** "Friend went live" notifications across all servers, a push-to-go-live hotkey, `stream://` links that open in the app.
 
+## Roadmap
+
+- **Clips that include your own stream.** The native sender already holds every encoded H.264/Opus packet, so the Rust side can keep its own rolling buffer and save "the last minute of me" without pulling the stream back down. Needs to follow the room's clip rules (opt-out, everyone told who's buffering) the same way the web clips do.
+- **Local preview toggle.** A free, low-frame-rate preview of your capture straight from the app, alongside the current "what viewers see" preview that pulls the stream back.
+- **Per-app sound picker.** An editable opt-out list (replacing the fixed voice-chat list) or an opt-in list of apps to mix, picked from apps currently playing sound.
+
 ## Open questions
 
 - Code signing: Azure Trusted Signing (~$10/month) or ship unsigned and accept the SmartScreen warning at first.
