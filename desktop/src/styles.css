@@ -209,6 +209,23 @@ input[type="text"] {
   display: grid;
   grid-template-columns: 72px 248px 1fr;
   height: 100%;
+  transition: grid-template-columns 0.18s ease;
+}
+
+/* Collapsed: the room takes the whole window; the rail and rooms slide away, not just hide */
+.shell.collapsed {
+  grid-template-columns: 0 0 1fr;
+}
+
+.shell > .rail,
+.shell > .rooms {
+  min-width: 0;
+  overflow-x: hidden;
+}
+
+.shell.collapsed > .rail,
+.shell.collapsed > .rooms {
+  border-right: none;
 }
 
 .rail {
@@ -434,6 +451,34 @@ input[type="text"] {
 
 .frame-title {
   font-weight: 600;
+}
+
+.sidebar-key {
+  position: relative;
+  display: grid;
+  place-items: center;
+  padding: 5px 7px;
+  border: 1px solid var(--seam);
+  background: linear-gradient(180deg, var(--steel-hi), var(--steel-lo));
+  box-shadow: var(--machined);
+  color: var(--platinum-lo);
+}
+
+.sidebar-key:hover:not(:disabled) {
+  color: var(--platinum);
+  filter: none;
+}
+
+.small-tally {
+  right: -4px;
+  bottom: auto;
+  top: -4px;
+  width: 11px;
+  height: 11px;
+}
+
+.go-live.compact {
+  padding: 5px 12px;
 }
 
 .frame-title .hash {

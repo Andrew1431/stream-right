@@ -16,6 +16,7 @@ import {
 
 const PEEK_MS = 30_000;
 const SELECTED_STORE = "selected";
+const COLLAPSED_STORE = "sidebarCollapsed";
 
 type Selection = { origin: string; room: string | null };
 
@@ -30,7 +31,32 @@ export function App() {
   });
   const [joining, setJoining] = useState(servers.length === 0);
   const [goLive, setGoLive] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem(COLLAPSED_STORE) === "true");
   const peeks = usePeeks(servers);
+
+  function toggleSidebar() {
+    setCollapsed((c) => {
+      try {
+        localStorage.setItem(COLLAPSED_STORE, String(!c));
+      } catch {
+        // Not remembered; fine.
+      }
+      return !c;
+    });
+  }
+
+  // Ctrl+B, like most editors. Keys pressed inside the room frame stay in the frame, so the
+  // toggle in the room bar is always there too.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "b") {
+        e.preventDefault();
+        toggleSidebar();
+      }
+    };
+    addEventListener("keydown", onKey);
+    return () => removeEventListener("keydown", onKey);
+  }, []);
 
   function update(next: Server[]) {
     setServers(next);
@@ -48,10 +74,13 @@ export function App() {
 
   const server = servers.find((s) => s.origin === selected?.origin) ?? servers[0] ?? null;
   const room = server?.rooms.find((r) => r.id === selected?.room) ?? null;
+  // Without a room open there's nothing to make room for, and nowhere else to pick one.
+  const hidden = collapsed && !!room;
+  const liveElsewhere = servers.some((s) => s.rooms.some((r) => r !== room && isLive(peeks[key(s.origin, r)])));
 
   return (
-    <div className="shell">
-      <nav className="rail" aria-label="Servers">
+    <div className={hidden ? "shell collapsed" : "shell"}>
+      <nav className="rail" aria-label="Servers" inert={hidden}>
         {servers.map((s) => {
           const live = s.rooms.some((r) => isLive(peeks[key(s.origin, r)]));
           return (
@@ -72,7 +101,7 @@ export function App() {
         </button>
       </nav>
 
-      <aside className="rooms">
+      <aside className="rooms" inert={hidden}>
         {server ? (
           <>
             <header className="rooms-head">
@@ -120,6 +149,10 @@ export function App() {
             key={key(server.origin, room)}
             src={roomUrl(server.origin, room)}
             title={room.id}
+            sidebarHidden={hidden}
+            liveElsewhere={liveElsewhere}
+            onToggleSidebar={toggleSidebar}
+            onGoLive={() => setGoLive(true)}
             onLeave={() => select({ origin: server.origin, room: null })}
             onForget={() => {
               update(removeRoom(servers, server.origin, room.id));
@@ -187,12 +220,34 @@ function RoomStatus({ peek }: { peek: Peek | null | undefined }) {
   );
 }
 
-function RoomFrame(props: { src: string; title: string; onLeave: () => void; onForget: () => void }) {
+function RoomFrame(props: {
+  src: string;
+  title: string;
+  sidebarHidden: boolean;
+  liveElsewhere: boolean;
+  onToggleSidebar: () => void;
+  onGoLive: () => void;
+  onLeave: () => void;
+  onForget: () => void;
+}) {
+  const label = props.sidebarHidden ? "Show servers and rooms (Ctrl+B)" : "Hide servers and rooms (Ctrl+B)";
   return (
     <div className="room-frame">
       <div className="frame-bar">
-        <span className="frame-title"><span className="hash">#</span>{props.title}</span>
         <div className="row">
+          <button type="button" className="sidebar-key" title={label} aria-label={label} aria-pressed={!props.sidebarHidden} onClick={props.onToggleSidebar}>
+            <SidebarGlyph open={!props.sidebarHidden} />
+            {props.sidebarHidden && props.liveElsewhere && <span className="tally small-tally" aria-label="Someone is live in another room" />}
+          </button>
+          <span className="frame-title"><span className="hash">#</span>{props.title}</span>
+        </div>
+        <div className="row">
+          {props.sidebarHidden && (
+            <button type="button" className="go-live compact" onClick={props.onGoLive}>
+              <span className="rec" aria-hidden="true" />
+              Go live
+            </button>
+          )}
           <button type="button" className="quiet" onClick={props.onLeave}>Leave</button>
           <button
             type="button"
@@ -210,6 +265,16 @@ function RoomFrame(props: { src: string; title: string; onLeave: () => void; onF
         allowFullScreen
       />
     </div>
+  );
+}
+
+function SidebarGlyph({ open }: { open: boolean }) {
+  return (
+    <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <rect x="2.5" y="3.5" width="15" height="13" rx="2" />
+      <path d="M8 3.5v13" />
+      {open ? <path d="M5.5 7.5h0M5.5 10h0" strokeLinecap="round" strokeWidth="1.8" /> : <path d="M11 8l2 2-2 2" strokeLinecap="round" strokeLinejoin="round" />}
+    </svg>
   );
 }
 
