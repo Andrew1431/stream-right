@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import type { CreateRoomResponse, RoomPeek, UsageResponse } from "../shared/protocol";
 import { DASHBOARD, UsageCard } from "../ui/usage";
+import { desktopAppLink, offerDesktopApp } from "./desktop";
 import { forgetRecent, loadRecent, type RecentRoom } from "./recent";
 import { inviteLink, load, remove, save } from "./storage";
 
@@ -330,6 +331,11 @@ function RoomRow(props: {
           <button type="button" className="link" disabled={!props.canRotate} onClick={props.onRotate}>
             Rotate link
           </button>
+        )}
+        {offerDesktopApp && !expired && (
+          <a className="link" href={desktopAppLink(room.link)}>
+            Open in the desktop app
+          </a>
         )}
         <button type="button" className="link" onClick={props.onForget}>
           Remove from list

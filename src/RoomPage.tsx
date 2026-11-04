@@ -6,7 +6,7 @@ import { RoomConnection, type RoomStatus } from "./connection";
 import { QualityPicker, useShareQuality } from "../ui/QualityPicker";
 import { SidebarGlyph } from "../ui/SidebarGlyph";
 import { gb } from "../ui/usage";
-import { askShell, inDesktop, useShell, useWhipHandoff } from "./desktop";
+import { askShell, DESKTOP_DOWNLOAD, desktopAppLink, inDesktop, offerDesktopApp, useShell, useWhipHandoff } from "./desktop";
 import { Publisher, settingsLabel, Subscriber, type Layer } from "./media";
 import { ensureObsKey, forgetObsKey, loadObsKey, ObsPanel, obsKeyId } from "./ObsPanel";
 import { SelfPreview, useHiddenFor, usePageActive } from "./SelfPreview";
@@ -652,6 +652,16 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
                     ? [
                         { label: "Leave room", hint: "Stays in your list", onSelect: () => askShell("leave") },
                         { label: "Forget room", hint: "Removes it from the app", onSelect: () => askShell("forget") },
+                      ]
+                    : []),
+                  ...(offerDesktopApp
+                    ? [
+                        {
+                          label: "Open in the desktop app",
+                          hint: "Windows app with native Go live",
+                          onSelect: () => location.assign(desktopAppLink(location.origin + location.pathname + location.hash)),
+                        },
+                        { label: "Get the app", hint: "Free download for Windows", onSelect: () => window.open(DESKTOP_DOWNLOAD, "_blank", "noopener") },
                       ]
                     : []),
                 ]}
