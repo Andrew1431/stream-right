@@ -4,6 +4,8 @@ import { Clipper, clipsSupported } from "./clips/clipper";
 import { ClipsNotice, clipsBadgeHint, ClipsPanel, playShutter, Toasts, useClipStats, type Toast } from "./ClipsPanel";
 import { RoomConnection, type RoomStatus } from "./connection";
 import { QualityPicker, useShareQuality } from "../ui/QualityPicker";
+import { SidebarGlyph } from "../ui/SidebarGlyph";
+import { askShell, inDesktop, useShell } from "./desktop";
 import { Publisher, settingsLabel, Subscriber, type Layer } from "./media";
 import { forgetObsKey, loadObsKey, ObsPanel, obsKeyId } from "./ObsPanel";
 import { SelfPreview, useHiddenFor, usePageActive } from "./SelfPreview";
@@ -141,7 +143,10 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
   const [subscriber, setSubscriber] = useState<Subscriber | null>(null);
   const [showUsage, setShowUsage] = useState(false);
   const closeUsage = useCallback(() => setShowUsage(false), []);
-  const creatorKey = useMemo(() => load("creatorKey", ""), []);
+  const shell = useShell();
+  const storedKey = useMemo(() => load("creatorKey", ""), []);
+  // Inside the desktop app, the app holds the creator key for each server.
+  const creatorKey = inDesktop ? (shell?.creatorKey ?? "") : storedKey;
   // Only for whoever saved the creator key on this browser, and only if the server has an API token.
   const usage = useUsage(creatorKey);
   const [focusId, setFocusId] = useState<string | null>(null);
@@ -470,11 +475,27 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
     <main className="room">
       <header className="topbar">
         <div className="row">
+          {inDesktop && (
+            <button
+              type="button"
+              className="sidebar-key"
+              title={shell?.sidebarHidden ? "Show servers and rooms (Ctrl+B)" : "Hide servers and rooms (Ctrl+B)"}
+              aria-label={shell?.sidebarHidden ? "Show servers and rooms" : "Hide servers and rooms"}
+              aria-pressed={!shell?.sidebarHidden}
+              onClick={() => askShell("toggle-sidebar")}
+            >
+              <SidebarGlyph open={!shell?.sidebarHidden} />
+              {shell?.sidebarHidden && shell.liveElsewhere && <span className="live-elsewhere" aria-label="Someone is live in another room" />}
+            </button>
+          )}
           <div className="masthead">
-            <a className="home-link" href="/" title="All rooms">stream</a>
+            {inDesktop ? <span className="home-link">stream</span> : <a className="home-link" href="/" title="All rooms">stream</a>}
             <StatusBadge status={status} />
           </div>
-          <strong className="room-name">{props.roomId}</strong>
+          <strong className="room-name">
+            {inDesktop && <span className="room-hash">#</span>}
+            {props.roomId}
+          </strong>
           {clipsAllowed && (
             <button
               type="button"
@@ -503,6 +524,14 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
             <button type="button" className="danger" onClick={stopShare}>
               Stop sharing ({captured || settingsLabel(settings)})
             </button>
+          ) : inDesktop ? (
+            // The app's native Go live replaces the browser picker; it's still in the ⋮ menu.
+            !myObs && (
+              <button type="button" className="go-live" disabled={status.kind !== "connected"} onClick={() => askShell("go-live")}>
+                <span className="rec-led" aria-hidden="true" />
+                Go live
+              </button>
+            )
           ) : (
             // Live from OBS already: browser sharing would be a second copy of the same screen.
             !myObs && (
@@ -554,15 +583,17 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
             </button>
           )}
 
-          <button
-            type="button"
-            className={`obs-key${showObs ? " active" : ""}${myObs ? " live" : ""}`}
-            title={myObs ? "You're live from OBS. Stream settings" : "Stream from OBS"}
-            aria-label="Stream from OBS"
-            onClick={() => setShowObs((s) => !s)}
-          >
-            <ObsGlyph />
-          </button>
+          {!inDesktop && (
+            <button
+              type="button"
+              className={`obs-key${showObs ? " active" : ""}${myObs ? " live" : ""}`}
+              title={myObs ? "You're live from OBS. Stream settings" : "Stream from OBS"}
+              aria-label="Stream from OBS"
+              onClick={() => setShowObs((s) => !s)}
+            >
+              <ObsGlyph />
+            </button>
+          )}
 
           <div className="menu-wrap">
             <button
@@ -598,9 +629,18 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
                       }]
                     : []),
                   { label: "Stream from OBS", hint: myObs ? "You're live" : "Server and token", onSelect: () => setShowObs(true) },
+                  ...(inDesktop && !localStream && !myObs
+                    ? [{ label: "Share with the browser picker", hint: settingsLabel(settings), onSelect: startShare }]
+                    : []),
                   { label: "Change your name", hint: me?.name ?? props.name, onSelect: props.onRename },
                   ...(isOwner
                     ? [{ label: "Revoke all OBS tokens", hint: "Ends every OBS stream in this room", onSelect: revokeAllObs }]
+                    : []),
+                  ...(inDesktop
+                    ? [
+                        { label: "Leave room", hint: "Stays in your list", onSelect: () => askShell("leave") },
+                        { label: "Forget room", hint: "Removes it from the app", onSelect: () => askShell("forget") },
+                      ]
                     : []),
                 ]}
               />
@@ -685,7 +725,7 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
 
       {watching.length === 0 ? (
         <div className="stage empty muted">
-          {localStream ? "You're sharing. Nobody else is sharing yet." : "Nobody is sharing yet. Click Share screen to start."}
+          {localStream ? "You're sharing. Nobody else is sharing yet." : `Nobody is sharing yet. Click ${inDesktop ? "Go live" : "Share screen"} to start.`}
         </div>
       ) : split ? (
         <div className="stage split" style={splitGrid(watching.length)}>

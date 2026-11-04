@@ -1,5 +1,6 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { QualityPicker, useShareQuality } from "../../ui/QualityPicker";
+import { SidebarGlyph } from "../../ui/SidebarGlyph";
 import { inShell, listWindows, type CaptureTarget } from "./native";
 import {
   addInvite,
@@ -10,6 +11,7 @@ import {
   roomUrl,
   saveServers,
   serverLabel,
+  setCreatorKey,
   type Peek,
   type Room,
   type Server,
@@ -18,6 +20,10 @@ import {
 const PEEK_MS = 30_000;
 const SELECTED_STORE = "selected";
 const COLLAPSED_STORE = "sidebarCollapsed";
+// The oldest room bridge this app understands (BRIDGE_VERSION in src/desktop.ts).
+const MIN_BRIDGE = 1;
+// A room that hasn't said hello by then is on a server from before the bridge.
+const BRIDGE_WAIT_MS = 4000;
 
 type Selection = { origin: string; room: string | null };
 
@@ -32,6 +38,7 @@ export function App() {
   });
   const [joining, setJoining] = useState(servers.length === 0);
   const [goLive, setGoLive] = useState(false);
+  const [editingServer, setEditingServer] = useState(false);
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(COLLAPSED_STORE) === "true");
   const peeks = usePeeks(servers);
 
@@ -105,10 +112,13 @@ export function App() {
       <aside className="rooms" inert={hidden}>
         {server ? (
           <>
-            <header className="rooms-head">
+            <button type="button" className="rooms-head" title="Server settings" onClick={() => setEditingServer(true)}>
               <span className="server-name">{serverLabel(server.origin)}</span>
-              <span className="muted small">{server.rooms.length === 1 ? "1 room" : `${server.rooms.length} rooms`}</span>
-            </header>
+              <span className="muted small">
+                {server.rooms.length === 1 ? "1 room" : `${server.rooms.length} rooms`}
+                {server.creatorKey && " · creator"}
+              </span>
+            </button>
             <ul className="room-list">
               {server.rooms.map((r) => {
                 const p = peeks[key(server.origin, r)];
@@ -137,10 +147,6 @@ export function App() {
             <span className="wordmark">stream</span>
             <span className="muted small">{inShell ? "Desktop" : "Preview in a browser"}</span>
           </div>
-          <button type="button" className="go-live" disabled={!room} onClick={() => setGoLive(true)}>
-            <span className="rec" aria-hidden="true" />
-            Go live
-          </button>
         </footer>
       </aside>
 
@@ -150,12 +156,15 @@ export function App() {
             key={key(server.origin, room)}
             src={roomUrl(server.origin, room)}
             title={room.id}
+            origin={server.origin}
+            creatorKey={server.creatorKey ?? ""}
             sidebarHidden={hidden}
             liveElsewhere={liveElsewhere}
             onToggleSidebar={toggleSidebar}
             onGoLive={() => setGoLive(true)}
             onLeave={() => select({ origin: server.origin, room: null })}
             onForget={() => {
+              if (!confirm(`Forget ${room.id}? You'll need its invite link to come back.`)) return;
               update(removeRoom(servers, server.origin, room.id));
               select(null);
             }}
@@ -177,6 +186,16 @@ export function App() {
             update(addInvite(servers, invite));
             select({ origin: invite.origin, room: invite.room.id });
             setJoining(false);
+          }}
+        />
+      )}
+      {editingServer && server && (
+        <ServerSheet
+          server={server}
+          onClose={() => setEditingServer(false)}
+          onSave={(key) => {
+            update(setCreatorKey(servers, server.origin, key));
+            setEditingServer(false);
           }}
         />
       )}
@@ -224,6 +243,8 @@ function RoomStatus({ peek }: { peek: Peek | null | undefined }) {
 function RoomFrame(props: {
   src: string;
   title: string;
+  origin: string;
+  creatorKey: string;
   sidebarHidden: boolean;
   liveElsewhere: boolean;
   onToggleSidebar: () => void;
@@ -231,35 +252,80 @@ function RoomFrame(props: {
   onLeave: () => void;
   onForget: () => void;
 }) {
+  const frame = useRef<HTMLIFrameElement>(null);
+  // "waiting" until the room says hello; "old" for servers from before the bridge or too old for this app.
+  const [bridge, setBridge] = useState<"waiting" | "ok" | "old">("waiting");
+  const [hello, setHello] = useState(0);
+  const latest = useRef(props);
+  latest.current = props;
+
+  useEffect(() => {
+    const timer = setTimeout(() => setBridge((b) => (b === "waiting" ? "old" : b)), BRIDGE_WAIT_MS);
+    const onMessage = (e: MessageEvent) => {
+      // Only the room page in this frame, from the server it belongs to, can ask for anything.
+      if (e.source !== frame.current?.contentWindow || e.origin !== latest.current.origin) return;
+      if (e.data?.source !== "stream-room") return;
+      const p = latest.current;
+      switch (e.data.type) {
+        case "ready":
+          setBridge(Number(e.data.v) >= MIN_BRIDGE ? "ok" : "old");
+          setHello((n) => n + 1);
+          break;
+        case "toggle-sidebar":
+          p.onToggleSidebar();
+          break;
+        case "go-live":
+          p.onGoLive();
+          break;
+        case "leave":
+          p.onLeave();
+          break;
+        case "forget":
+          p.onForget();
+          break;
+      }
+    };
+    addEventListener("message", onMessage);
+    return () => {
+      clearTimeout(timer);
+      removeEventListener("message", onMessage);
+    };
+  }, []);
+
+  // The room renders the app's state in its own bar, so send it on every hello and change.
+  useEffect(() => {
+    if (bridge !== "ok") return;
+    frame.current?.contentWindow?.postMessage(
+      { source: "stream-shell", type: "state", sidebarHidden: props.sidebarHidden, liveElsewhere: props.liveElsewhere, creatorKey: props.creatorKey },
+      props.origin,
+    );
+  }, [bridge, hello, props.sidebarHidden, props.liveElsewhere, props.creatorKey, props.origin]);
+
   const label = props.sidebarHidden ? "Show servers and rooms (Ctrl+B)" : "Hide servers and rooms (Ctrl+B)";
   return (
-    <div className="room-frame">
-      <div className="frame-bar">
-        <div className="row">
-          <button type="button" className="sidebar-key" title={label} aria-label={label} aria-pressed={!props.sidebarHidden} onClick={props.onToggleSidebar}>
-            <SidebarGlyph open={!props.sidebarHidden} />
-            {props.sidebarHidden && props.liveElsewhere && <span className="tally small-tally" aria-label="Someone is live in another room" />}
-          </button>
-          <span className="frame-title"><span className="hash">#</span>{props.title}</span>
-        </div>
-        <div className="row">
-          {props.sidebarHidden && (
+    <div className={bridge === "old" ? "room-frame with-bar" : "room-frame"}>
+      {bridge === "old" && (
+        <div className="frame-bar">
+          <div className="row">
+            <button type="button" className="sidebar-key" title={label} aria-label={label} aria-pressed={!props.sidebarHidden} onClick={props.onToggleSidebar}>
+              <SidebarGlyph open={!props.sidebarHidden} />
+              {props.sidebarHidden && props.liveElsewhere && <span className="tally small-tally" aria-label="Someone is live in another room" />}
+            </button>
+            <span className="frame-title"><span className="hash">#</span>{props.title}</span>
+            <span className="muted small" title="Its owner can update it to get the app's layout">This server's stream is older than the app</span>
+          </div>
+          <div className="row">
             <button type="button" className="go-live compact" onClick={props.onGoLive}>
               <span className="rec" aria-hidden="true" />
               Go live
             </button>
-          )}
-          <button type="button" className="quiet" onClick={props.onLeave}>Leave</button>
-          <button
-            type="button"
-            className="quiet"
-            onClick={() => confirm(`Forget ${props.title}? You'll need its invite link to come back.`) && props.onForget()}
-          >
-            Forget room
-          </button>
+            <button type="button" className="quiet" onClick={props.onLeave}>Leave</button>
+            <button type="button" className="quiet" onClick={props.onForget}>Forget room</button>
+          </div>
         </div>
-      </div>
+      )}
       <iframe
+        ref={frame}
         src={props.src}
         title={props.title}
         allow="display-capture; autoplay; fullscreen; clipboard-write"
@@ -269,13 +335,38 @@ function RoomFrame(props: {
   );
 }
 
-function SidebarGlyph({ open }: { open: boolean }) {
+function ServerSheet(props: { server: Server; onClose: () => void; onSave: (creatorKey: string) => void }) {
+  const [key, setKey] = useState(props.server.creatorKey ?? "");
   return (
-    <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <rect x="2.5" y="3.5" width="15" height="13" rx="2" />
-      <path d="M8 3.5v13" />
-      {open ? <path d="M5.5 7.5h0M5.5 10h0" strokeLinecap="round" strokeWidth="1.8" /> : <path d="M11 8l2 2-2 2" strokeLinecap="round" strokeLinejoin="round" />}
-    </svg>
+    <Sheet title={serverLabel(props.server.origin)} onClose={props.onClose}>
+      <form
+        className="stack"
+        onSubmit={(e) => {
+          e.preventDefault();
+          props.onSave(key.trim());
+        }}
+      >
+        <label className="stack tight">
+          <span className="small muted">Creator key</span>
+          <input type="password" value={key} onChange={(e) => setKey(e.target.value)} autoComplete="off" spellCheck={false} />
+        </label>
+        <p className="small muted">
+          Only if you run this server. Its rooms then show streaming usage and owner controls. It's kept on this
+          computer and only ever sent to {new URL(props.server.origin).host}.
+        </p>
+        <div className="row spread">
+          {props.server.creatorKey ? (
+            <button type="button" className="quiet" onClick={() => props.onSave("")}>Remove key</button>
+          ) : (
+            <span />
+          )}
+          <div className="row">
+            <button type="button" className="quiet" onClick={props.onClose}>Cancel</button>
+            <button type="submit">Save</button>
+          </div>
+        </div>
+      </form>
+    </Sheet>
   );
 }
 

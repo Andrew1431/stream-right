@@ -2,7 +2,9 @@
 // origin; its rooms are the "channels".
 
 export type Room = { id: string; token: string };
-export type Server = { origin: string; rooms: Room[] };
+// creatorKey is this server's room-creation password, if you hold it; the app hands it to the
+// server's room pages so they show usage and owner controls.
+export type Server = { origin: string; rooms: Room[]; creatorKey?: string };
 
 const STORE = "servers";
 
@@ -49,7 +51,13 @@ export function removeRoom(servers: Server[], origin: string, id: string): Serve
 }
 
 export const serverLabel = (origin: string) => new URL(origin).hostname.replace(/^stream\./, "");
-export const roomUrl = (origin: string, room: Room) => `${origin}/r/${encodeURIComponent(room.id)}#k=${room.token}`;
+// embed=desktop switches the room into its desktop layout and the bridge in src/desktop.ts.
+export const roomUrl = (origin: string, room: Room) =>
+  `${origin}/r/${encodeURIComponent(room.id)}?embed=desktop#k=${room.token}`;
+
+export function setCreatorKey(servers: Server[], origin: string, creatorKey: string): Server[] {
+  return servers.map((s) => (s.origin === origin ? { ...s, creatorKey: creatorKey || undefined } : s));
+}
 
 export type Peek = { ok: false } | { ok: true; people: number; live: number };
 

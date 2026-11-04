@@ -1336,3 +1336,45 @@ button.thumb:hover .tile {
     transition: none;
   }
 }
+
+/* Inside the desktop app: the app's sidebar toggle leads the bar, and Go live replaces the browser picker */
+
+.sidebar-key {
+  position: relative;
+  display: grid;
+  place-items: center;
+  padding: 6px 8px;
+  border: 1px solid var(--seam);
+  background: linear-gradient(180deg, var(--steel-hi), var(--steel-lo));
+  box-shadow: var(--machined);
+  color: var(--platinum-lo);
+}
+
+.sidebar-key:hover:not(:disabled) {
+  color: var(--platinum);
+  filter: none;
+}
+
+.live-elsewhere {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--tally);
+  border: 2px solid var(--graphite-deep);
+  box-shadow: 0 0 8px rgb(255 90 78 / 0.6);
+}
+
+.room-hash {
+  margin-right: 3px;
+  color: var(--pewter);
+  font-weight: 400;
+}
+
+button.go-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+}

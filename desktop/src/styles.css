@@ -124,7 +124,8 @@ button.quiet:hover:not(:disabled) {
 }
 
 input:not([type]),
-input[type="text"] {
+input[type="text"],
+input[type="password"] {
   width: 100%;
   padding: 10px 12px;
   border-radius: 8px;
@@ -291,6 +292,13 @@ select {
 }
 
 .rooms-head {
+  width: 100%;
+  border: none;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  font-weight: inherit;
+  text-align: left;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -428,8 +436,12 @@ select {
 
 .room-frame {
   display: grid;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: 1fr;
   height: 100%;
+}
+
+.room-frame.with-bar {
+  grid-template-rows: auto 1fr;
 }
 
 .frame-bar {
