@@ -2,8 +2,9 @@ mod admin;
 mod capture;
 mod icons;
 // Native Go live; the stages are being built, nothing calls them yet.
+// Native Go live; the stages are being built, nothing calls them yet. Public for the dev probes in examples/.
 #[allow(dead_code)]
-mod live;
+pub mod live;
 mod windows_list;
 
 pub fn run() {
