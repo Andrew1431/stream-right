@@ -1,10 +1,7 @@
 mod admin;
 mod capture;
 mod icons;
-// Native Go live; the stages are being built, nothing calls them yet.
-// Native Go live; the stages are being built, nothing calls them yet. Public for the dev probes in examples/.
-#[allow(dead_code)]
-// Public only so dev harnesses in examples/ can drive the stages.
+// Native Go live. Public only so the dev probes in examples/ can drive the stages.
 #[doc(hidden)]
 pub mod live;
 mod windows_list;
