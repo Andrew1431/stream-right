@@ -68,10 +68,15 @@ export default {
 
     const peek = pathname.match(/^\/api\/rooms\/([^/]+)\/peek$/);
     if (peek) {
+      // Open to any origin so the desktop app can show live status for rooms on every server it
+      // holds links for. The token is the credential, and the answer is just two counts.
+      const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "content-type" };
+      if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: { ...cors, "Access-Control-Allow-Methods": "POST" } });
       if (req.method !== "POST" || !ROOM_ID_PATTERN.test(peek[1])) return json({ error: "Not found" }, 404);
       const body = (await req.json().catch(() => ({}))) as { token?: unknown };
-      if (typeof body.token !== "string" || !body.token) return json({ ok: false } satisfies RoomPeek);
-      return json(await env.ROOMS.getByName(peek[1]).peek(body.token.slice(0, 128)));
+      const result: RoomPeek =
+        typeof body.token === "string" && body.token ? await env.ROOMS.getByName(peek[1]).peek(body.token.slice(0, 128)) : { ok: false };
+      return Response.json(result, { headers: cors });
     }
 
     const ws = pathname.match(/^\/api\/rooms\/([^/]+)\/ws$/);
