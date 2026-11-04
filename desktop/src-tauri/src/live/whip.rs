@@ -1,5 +1,5 @@
-//! Sender: a WHIP client (RFC 9725) that publishes one H.264 video track and one Opus audio
-//! track to a stream server's room, the same endpoint OBS uses:
+//! Sender: a WHIP client (RFC 9725) that publishes one H.264 video track (simulcast, when the
+//! video stage encodes more than one layer) and one Opus audio track to a stream server's room, the same endpoint OBS uses:
 //! `POST {endpoint}` with `Authorization: Bearer {token}` and an SDP offer, then RTP over the
 //! negotiated ICE/DTLS-SRTP connection, and `DELETE {Location}` on stop.
 //!
@@ -8,7 +8,7 @@
 //! notices. str0m does the H.264 (STAP-A/FU-A) and Opus payloading, RTCP sender reports and
 //! NACK retransmission over RTX; PLI/FIR arrive as `Event::KeyframeRequest`.
 
-use super::{AudioTx, Clock, EncodedAudio, EncodedVideo, LiveEvent, Stage, VideoTx};
+use super::{AudioTx, Clock, EncodedAudio, EncodedVideo, LiveEvent, Stage, VideoTx, MAX_LAYERS, RIDS};
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use str0m::change::SdpAnswer;
 use str0m::format::Codec;
-use str0m::media::{Direction, MediaKind, MediaTime, Mid, Pt};
+use str0m::media::{Direction, MediaKind, MediaTime, Mid, Pt, Rid, Simulcast, SimulcastLayer};
 use str0m::net::{Protocol, Receive};
 use str0m::{Candidate, Event, IceConnectionState, Input, Output, Rtc, RtcConfig};
 
@@ -33,15 +33,18 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Connects and starts sending. `video`/`audio` are the receiving ends of the stages' channels;
 /// when both close, the sender ends the session (DELETE) and reports `Stopped`. A PLI or FIR from
-/// the SFU becomes a `()` on `keyframes`. Connection drops are retried with backoff, reporting
-/// `Reconnecting`, and a keyframe is requested on every reconnect.
+/// the SFU becomes a request on `keyframes` for the layer it names. `layers` is how many simulcast
+/// layers the video stage sends (1 for none). Connection drops are retried with backoff,
+/// reporting `Reconnecting`, and a keyframe is requested on every reconnect.
+#[allow(clippy::too_many_arguments)]
 pub fn connect(
     endpoint: String,
     token: String,
     clock: Clock,
+    layers: usize,
     video: Receiver<EncodedVideo>,
     audio: Receiver<EncodedAudio>,
-    keyframes: SyncSender<()>,
+    keyframes: SyncSender<Option<usize>>,
     events: impl Fn(LiveEvent) + Send + 'static,
 ) -> Result<Stage, String> {
     if !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
@@ -54,7 +57,8 @@ pub fn connect(
     forward(video, tx.clone(), Msg::Video, Msg::VideoClosed)?;
     forward(audio, tx.clone(), Msg::Audio, Msg::AudioClosed)?;
     Stage::spawn("live-whip", move |stop| {
-        let mut sender = Sender_ { endpoint, token, clock, rx, tx, keyframes, events: &events, stop };
+        let layers = layers.clamp(1, MAX_LAYERS);
+        let mut sender = Sender_ { endpoint, token, clock, layers, rx, tx, keyframes, events: &events, stop };
         let error = sender.run().err();
         events(LiveEvent::Stopped { error });
     })
@@ -110,8 +114,9 @@ struct Conn {
     last_rx: Instant,
     connected: bool,
     disconnected_at: Option<Instant>,
-    /// Delta frames are useless to a viewer until the next IDR; hold them back after (re)connecting.
-    need_keyframe: bool,
+    /// Per layer: delta frames are useless to a viewer until the next IDR; hold them back after
+    /// (re)connecting.
+    need_keyframe: [bool; MAX_LAYERS],
     last_keyframe_request: Option<Instant>,
     last_audio_ts: Option<u64>,
     /// Dev-only fault injection (debug builds): drop all traffic from this instant on.
@@ -136,9 +141,10 @@ struct Sender_<'a, F: Fn(LiveEvent)> {
     endpoint: String,
     token: String,
     clock: Clock,
+    layers: usize,
     rx: Receiver<Msg>,
     tx: Sender<Msg>,
-    keyframes: SyncSender<()>,
+    keyframes: SyncSender<Option<usize>>,
     events: &'a F,
     stop: Arc<AtomicBool>,
 }
@@ -217,9 +223,11 @@ impl<F: Fn(LiveEvent)> Sender_<'_, F> {
                 attempt = if was_live { 1 } else { attempt + 1 };
                 continue;
             }
-            if c.connected && c.need_keyframe && c.last_keyframe_request.is_none_or(|t| now - t > Duration::from_secs(1)) {
+            if c.connected && c.need_keyframe[..self.layers].contains(&true) && c.last_keyframe_request.is_none_or(|t| now - t > Duration::from_secs(1)) {
                 c.last_keyframe_request = Some(now);
-                let _ = self.keyframes.try_send(());
+                for layer in (0..self.layers).filter(|&i| c.need_keyframe[i]) {
+                    let _ = self.keyframes.try_send(Some(layer));
+                }
             }
             if now >= stats_at {
                 let secs = (now - stats_at + Duration::from_secs(1)).as_secs_f32();
@@ -267,16 +275,23 @@ impl<F: Fn(LiveEvent)> Sender_<'_, F> {
                     }
                 }
                 Msg::Video(frame) => {
-                    if !c.connected || (c.need_keyframe && !frame.keyframe) {
+                    let layer = frame.layer;
+                    if !c.connected || layer >= self.layers || (c.need_keyframe[layer] && !frame.keyframe) {
                         Ok(())
                     } else {
-                        c.need_keyframe = false;
+                        c.need_keyframe[layer] = false;
                         counters.video_bytes += frame.data.len() as u64;
-                        counters.frames += 1;
+                        if layer == 0 {
+                            counters.frames += 1;
+                        }
                         let (mid, pt) = c.video;
                         let ts = MediaTime::new(frame.pts_us * 9 / 100, str0m::media::Frequency::NINETY_KHZ);
+                        let simulcast = self.layers > 1;
                         match c.rtc.writer(mid) {
-                            Some(w) => w.write(pt, epoch + Duration::from_micros(frame.pts_us), ts, frame.data),
+                            Some(w) => {
+                                let w = if simulcast { w.rid(Rid::from(RIDS[layer])) } else { w };
+                                w.write(pt, epoch + Duration::from_micros(frame.pts_us), ts, frame.data)
+                            }
                             None => Ok(()),
                         }
                     }
@@ -354,7 +369,7 @@ impl<F: Fn(LiveEvent)> Sender_<'_, F> {
                 Output::Event(e) => match e {
                     Event::Connected => {
                         c.connected = true;
-                        c.need_keyframe = true;
+                        c.need_keyframe = [true; MAX_LAYERS];
                         c.last_keyframe_request = None;
                         (self.events)(LiveEvent::Live);
                     }
@@ -365,7 +380,8 @@ impl<F: Fn(LiveEvent)> Sender_<'_, F> {
                         c.disconnected_at = None;
                     }
                     Event::KeyframeRequest(r) if r.mid == c.video.0 => {
-                        let _ = self.keyframes.try_send(());
+                        let layer = r.rid.and_then(|rid| RIDS[..self.layers].iter().position(|&name| Rid::from(name) == rid));
+                        let _ = self.keyframes.try_send(layer);
                     }
                     Event::Closed => return Err("connection closed".into()),
                     _ => {}
@@ -410,7 +426,15 @@ impl<F: Fn(LiveEvent)> Sender_<'_, F> {
 
         let mut change = rtc.sdp_api();
         let audio_mid = change.add_media(MediaKind::Audio, Direction::SendOnly, Some("stream".into()), Some("audio".into()), None);
-        let video_mid = change.add_media(MediaKind::Video, Direction::SendOnly, Some("stream".into()), Some("video".into()), None);
+        // Layers listed best first: the server maps viewers' f/h/q onto them in this order.
+        let simulcast = (self.layers > 1).then(|| {
+            let mut s = Simulcast::new();
+            for rid in &RIDS[..self.layers] {
+                s.add_send_layer(SimulcastLayer::new(rid));
+            }
+            s
+        });
+        let video_mid = change.add_media(MediaKind::Video, Direction::SendOnly, Some("stream".into()), Some("video".into()), simulcast);
         let (offer, pending) = change.apply().ok_or_else(|| Fail::Fatal("couldn't build an offer".into()))?;
         let offer = offer.to_sdp_string();
 
@@ -471,7 +495,7 @@ impl<F: Fn(LiveEvent)> Sender_<'_, F> {
             last_rx: now,
             connected: false,
             disconnected_at: None,
-            need_keyframe: true,
+            need_keyframe: [true; MAX_LAYERS],
             last_keyframe_request: None,
             last_audio_ts: None,
             blackhole_at: None,

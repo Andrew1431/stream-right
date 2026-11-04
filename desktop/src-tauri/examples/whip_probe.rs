@@ -37,10 +37,10 @@ fn main() {
     let t0 = Instant::now();
     let (vtx, vrx) = sync_channel::<EncodedVideo>(8);
     let (atx, arx) = sync_channel::<EncodedAudio>(32);
-    let (ktx, krx) = sync_channel::<()>(4);
+    let (ktx, krx) = sync_channel::<Option<usize>>(4);
     let (done_tx, done_rx) = sync_channel::<()>(1);
 
-    let stage = live::whip::connect(url, token.trim().to_string(), clock, vrx, arx, ktx, move |e| {
+    let stage = live::whip::connect(url, token.trim().to_string(), clock, 1, vrx, arx, ktx, move |e| {
         let at = t0.elapsed().as_secs_f32();
         match &e {
             LiveEvent::Stats { .. } => println!("[{at:6.2}] {e:?}"),
@@ -98,7 +98,7 @@ fn main() {
         }
         loop {
             match krx.try_recv() {
-                Ok(()) => {
+                Ok(_) => {
                     requests += 1;
                     enc.force_intra_frame();
                 }
@@ -115,7 +115,7 @@ fn main() {
             continue;
         }
         keyframes_sent += keyframe as u32;
-        if vtx.send(EncodedVideo { data, pts_us, keyframe, width: width as u32, height: height as u32 }).is_err() {
+        if vtx.send(EncodedVideo { data, pts_us, keyframe, layer: 0, width: width as u32, height: height as u32 }).is_err() {
             break;
         }
     }

@@ -9,19 +9,25 @@ import {
   type MonitorTarget,
 } from "./native";
 import type { ShareSettings } from "../../ui/presets";
-import type { LiveAudio, LiveSource } from "./live";
+import { LAYER_COUNTS, mbps, uploadKbps, type LayerCount, type LiveAudio, type LiveSource } from "./live";
 import { Sheet } from "./Sheet";
 
 const THUMB_WIDTH = 320;
 // Previews refresh while the sheet is open, so a game that just went fullscreen shows up.
 const REFRESH_MS = 5000;
+const LAYERS_STORE = "liveLayers";
+
+function loadLayers(): LayerCount {
+  const n = Number(localStorage.getItem(LAYERS_STORE));
+  return LAYER_COUNTS.includes(n as LayerCount) ? (n as LayerCount) : 3;
+}
 
 type Pick = { kind: "monitor"; id: number } | { kind: "window"; id: number };
 
 export function GoLiveSheet(props: {
   roomName: string;
   onClose: () => void;
-  onStart: (source: LiveSource, audio: LiveAudio, settings: ShareSettings, sourceHeight: number) => Promise<void>;
+  onStart: (source: LiveSource, audio: LiveAudio, settings: ShareSettings, sourceHeight: number, layers: LayerCount) => Promise<void>;
 }) {
   const [monitors, setMonitors] = useState<MonitorTarget[]>([]);
   const [windows, setWindows] = useState<CaptureTarget[] | null>(null);
@@ -29,6 +35,7 @@ export function GoLiveSheet(props: {
   const [picked, setPicked] = useState<Pick | null>(null);
   const [sound, setSound] = useState(true);
   const quality = useShareQuality();
+  const [layers, setLayersState] = useState(loadLayers);
   const [note, setNote] = useState("");
   const [starting, setStarting] = useState(false);
 
@@ -67,14 +74,22 @@ export function GoLiveSheet(props: {
   const pickedWindow = picked?.kind === "window" ? windows?.find((w) => w.id === picked.id) : undefined;
   const pickedMonitor = picked?.kind === "monitor" ? monitors.find((m) => m.id === picked.id) : undefined;
 
+  function setLayers(n: LayerCount) {
+    setLayersState(n);
+    localStorage.setItem(LAYERS_STORE, String(n));
+  }
+
+  // Windows don't report their size here, so they're estimated at 1080p.
+  const sourceHeight = pickedMonitor?.height ?? 1080;
+  const { height, fps } = quality.settings;
+  const upload = uploadKbps(height ? Math.min(height, sourceHeight) : sourceHeight, fps, layers);
+
   async function start() {
     let source: LiveSource;
     let audio: LiveAudio = { kind: "off" };
-    let sourceHeight = 1080;
     if (pickedMonitor) {
       source = { kind: "monitor", id: pickedMonitor.id };
       if (sound) audio = { kind: "allExceptVoice" };
-      sourceHeight = pickedMonitor.height;
     } else if (pickedWindow) {
       source = { kind: "window", id: pickedWindow.id, pid: pickedWindow.pid };
       if (sound) audio = { kind: "app", pid: pickedWindow.pid };
@@ -82,7 +97,7 @@ export function GoLiveSheet(props: {
     setStarting(true);
     setNote("");
     try {
-      await props.onStart(source, audio, quality.settings, sourceHeight);
+      await props.onStart(source, audio, quality.settings, sourceHeight, layers);
     } catch (e) {
       setNote(e instanceof Error ? e.message : String(e));
     } finally {
@@ -170,9 +185,24 @@ export function GoLiveSheet(props: {
           )}
         </label>
 
+        <div className="row">
+          <span className="small">Viewer quality options</span>
+          <div className="segmented" role="radiogroup" aria-label="Viewer quality options">
+            {LAYER_COUNTS.map((n) => (
+              <button key={n} type="button" role="radio" aria-checked={layers === n} className={layers === n ? "active" : ""} onClick={() => setLayers(n)}>
+                {n}
+              </button>
+            ))}
+          </div>
+          <span className="muted small">
+            {layers === 1 ? "Everyone gets the full picture" : "Lets viewers on slow connections pick a smaller version"}
+          </span>
+        </div>
+
         <div className="row spread">
           <div className="row">
             <QualityPicker quality={quality} />
+            <span className="muted small">About {mbps(upload)} upload</span>
           </div>
           <button
             type="button"

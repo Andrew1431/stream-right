@@ -549,9 +549,16 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
               Stop sharing ({captured || settingsLabel(settings)})
             </button>
           ) : inDesktop && shell?.live ? (
-            <button type="button" className="danger" onClick={() => askShell("stop-live")}>
-              Stop streaming
-            </button>
+            <>
+              {shell.uploadKbps > 0 && (
+                <span className="muted small" title="What the app is sending, all quality options included">
+                  {(shell.uploadKbps / 1000).toFixed(1)} Mbps up
+                </span>
+              )}
+              <button type="button" className="danger" onClick={() => askShell("stop-live")}>
+                Stop streaming
+              </button>
+            </>
           ) : inDesktop ? (
             // The app's native Go live replaces the browser picker; it's still in the ⋮ menu.
             !myObs && (

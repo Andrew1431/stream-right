@@ -28,6 +28,8 @@ export type ShellState = {
   creatorKey: string;
   // The app is streaming natively into this room.
   live: boolean;
+  // Measured upload of that stream in kbps; 0 until known, and from apps that don't send it.
+  uploadKbps: number;
 };
 
 export function askShell(type: ShellRequest) {
@@ -67,8 +69,14 @@ export function useShell(): ShellState | null {
     if (!inDesktop) return;
     const onMessage = (e: MessageEvent) => {
       if (e.source !== window.parent || e.data?.source !== "stream-shell" || e.data.type !== "state") return;
-      const { sidebarHidden, liveElsewhere, creatorKey, live } = e.data;
-      setState({ sidebarHidden: !!sidebarHidden, liveElsewhere: !!liveElsewhere, creatorKey: String(creatorKey ?? ""), live: !!live });
+      const { sidebarHidden, liveElsewhere, creatorKey, live, uploadKbps } = e.data;
+      setState({
+        sidebarHidden: !!sidebarHidden,
+        liveElsewhere: !!liveElsewhere,
+        creatorKey: String(creatorKey ?? ""),
+        live: !!live,
+        uploadKbps: Number(uploadKbps) > 0 ? Number(uploadKbps) : 0,
+      });
     };
     // Keys pressed in the room never reach the app window, so the room forwards its shortcut.
     const onKey = (e: KeyboardEvent) => {

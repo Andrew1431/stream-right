@@ -64,13 +64,14 @@ pub async fn stop_live(state: State<'_, LiveState>) -> Result<(), String> {
 
 fn start(app: AppHandle, request: GoLive) -> Result<Running, String> {
     let clock = Clock::start();
-    let (video_tx, video_rx) = sync_channel(VIDEO_QUEUE);
+    let layers = request.settings.layer_count();
+    let (video_tx, video_rx) = sync_channel(VIDEO_QUEUE * layers);
     let (audio_tx, audio_rx) = sync_channel(AUDIO_QUEUE);
-    let (keyframe_tx, keyframe_rx) = sync_channel(4);
+    let (keyframe_tx, keyframe_rx) = sync_channel(4 * layers);
 
     let emit = app.clone();
     let _ = app.emit("live", LiveEvent::Connecting);
-    let sender = whip::connect(request.endpoint, request.token, clock, video_rx, audio_rx, keyframe_tx, move |event| {
+    let sender = whip::connect(request.endpoint, request.token, clock, layers, video_rx, audio_rx, keyframe_tx, move |event| {
         let _ = emit.emit("live", event);
     })?;
     // If capture can't start, dropping the sender's stage (and the channels) ends the session.

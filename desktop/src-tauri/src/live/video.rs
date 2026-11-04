@@ -11,14 +11,20 @@
 //! replaced by newer ones until its slot comes; when the source stops drawing (WGC only delivers
 //! on change), the last frame is sent again each slot so the stream never stalls.
 //!
+//! Simulcast layers are scaled from the captured frame by their own video processor pass and
+//! encoded by their own encoder; lower layers take a subset of the full layer's frames.
+//!
 //! The encoded size is fixed per encoder. When the source is resized, the new picture is fitted
 //! (letterboxed) into the old size at once, and the encoder is rebuilt at the new size once the
 //! size has held still for [`RESIZE_SETTLE`].
 
 use super::{Clock, EncodedVideo, KeyframeRequests, Source, Stage, VideoSettings, VideoTx};
+#[cfg(windows)]
+use super::{bitrate_kbps, layer_fps, layer_size};
 
-/// Starts capturing and encoding. Encoded frames go to `tx`; an IDR frame is produced as soon as
-/// possible after each message on `keyframes`, and at least every 2 seconds regardless.
+/// Starts capturing and encoding, one encoder per simulcast layer. Encoded frames go to `tx`; an
+/// IDR frame is produced on the requested layer (or all) as soon as possible after each message on
+/// `keyframes`, and at least every 2 seconds regardless.
 /// Errors before the thread starts (bad source, no encoder) are returned here; later failures
 /// end the stage and drop `tx`, which the sender sees as the stream ending.
 pub fn start(source: Source, settings: VideoSettings, clock: Clock, tx: VideoTx, keyframes: KeyframeRequests) -> Result<Stage, String> {
@@ -276,7 +282,7 @@ mod imp {
                     continue;
                 }
             };
-            match Encoder::new(&candidate, &gpu, initial, settings, clock, tx.clone(), wake_h) {
+            match Encoder::new(candidate.activate.clone(), &gpu, initial, settings, 0, clock, tx.clone(), wake_h) {
                 Ok(encoder) => {
                     chosen = Some((candidate, gpu, encoder));
                     break;
@@ -284,9 +290,15 @@ mod imp {
                 Err(e) => failures.push(format!("{}: {e}", candidate.name)),
             }
         }
-        let Some((candidate, gpu, mut encoder)) = chosen else {
+        let Some((candidate, gpu, encoder)) = chosen else {
             return Err(format!("No hardware H.264 encoder could be started ({})", failures.join("; ")));
         };
+        let count = settings.layer_count();
+        let mut layers: Vec<Layer> = (0..count).map(|i| Layer::new(i, layer_fps(settings.fps, i))).collect();
+        layers[0].encoder = Some(encoder);
+        for layer in &mut layers[1..] {
+            layer.start_lower(&candidate, &gpu, initial, settings, count, clock, &tx, wake_h);
+        }
         let mut capture = Capture::new(item, &gpu, size, source, wake_h)?;
         if let Some(ready) = ready.take() {
             let _ = ready.send(Ok(candidate.name.clone()));
@@ -297,28 +309,26 @@ mod imp {
         let early = interval / 4; // a fresh frame may go this much before its slot
         let grace = interval / 2; // wait this long past a slot for a fresh frame before repeating
 
-        let mut converter: Option<Converter> = None;
         let mut held: Option<Held> = None;
         let mut dirty = false; // `held` hasn't been sent yet
         let mut slot = 0u64; // session time of the last sent slot
         let mut sent_any = false;
         let mut last_pts = 0u64;
-        let mut last_forced = 0u64;
-        let mut want_key = false;
         let mut pending_size: Option<((u32, u32), Instant)> = None;
 
-        let result = loop {
+        let result = 'main: loop {
             if stop.load(Ordering::Relaxed) {
                 break Ok(());
             }
             if capture.closed() {
                 break Ok(());
             }
-            if let Some(e) = encoder.failure() {
-                break Err(e);
-            }
-            if encoder.shared.closed.load(Ordering::Relaxed) {
-                break Ok(());
+            let ended = layers.iter().filter_map(|l| l.encoder.as_ref()).find_map(|e| match e.failure() {
+                Some(error) => Some(Err(error)),
+                None => e.shared.closed.load(Ordering::Relaxed).then_some(Ok(())),
+            });
+            if let Some(ended) = ended {
+                break ended;
             }
 
             // Newest frame wins; older ones go straight back to the pool.
@@ -342,15 +352,19 @@ mod imp {
                     Err(e) => eprintln!("live video: dropped a frame: {e}"),
                 }
             }
-            while keyframes.try_recv().is_ok() {
-                want_key = true;
+            while let Ok(request) = keyframes.try_recv() {
+                for layer in &mut layers {
+                    if request.is_none_or(|i| i == layer.index) {
+                        layer.want_key = true;
+                    }
+                }
             }
 
             let mut blocked = false;
             if let Some(frame) = &held {
                 // Follow the source size: letterbox at once, re-encode at the new size once it settles.
                 let wanted = output_size(frame.content.0, frame.content.1, settings.height);
-                if wanted != encoder.size {
+                if Some(wanted) != layers[0].size() {
                     let settled = match pending_size {
                         Some((size, since)) if size == wanted => since.elapsed() >= RESIZE_SETTLE,
                         _ => {
@@ -359,14 +373,19 @@ mod imp {
                         }
                     };
                     if settled || !sent_any {
-                        converter = None;
-                        drop(encoder);
-                        encoder = match Encoder::new(&candidate, &gpu, wanted, settings, clock, tx.clone(), wake_h) {
+                        // All old encoders go first: drivers cap how many can run at once.
+                        for layer in &mut layers {
+                            layer.stop();
+                        }
+                        let encoder = match Encoder::new(candidate.activate.clone(), &gpu, wanted, settings, 0, clock, tx.clone(), wake_h) {
                             Ok(encoder) => encoder,
                             Err(e) => return Err(format!("restarting the encoder at {}x{}: {e}", wanted.0, wanted.1)),
                         };
+                        layers[0].encoder = Some(encoder);
+                        for layer in &mut layers[1..] {
+                            layer.start_lower(&candidate, &gpu, wanted, settings, count, clock, &tx, wake_h);
+                        }
                         pending_size = None;
-                        last_forced = 0;
                     }
                 } else {
                     pending_size = None;
@@ -376,25 +395,23 @@ mod imp {
                 let due = if dirty { (slot + interval).saturating_sub(early) } else { slot + interval + grace };
                 if !sent_any || now >= due {
                     let pts = if dirty { frame.pts } else { now }.max(last_pts + 1);
-                    let since_idr = pts.saturating_sub(encoder.shared.last_idr_us.load(Ordering::Relaxed).max(last_forced));
-                    let force = want_key || (sent_any && since_idr + interval / 2 >= IDR_INTERVAL_US);
-                    let conv = match &mut converter {
-                        Some(c) if c.matches(&frame.texture_size, encoder.size) => c,
-                        _ => match Converter::new(&gpu, frame.texture_size, encoder.size, settings.fps) {
-                            Ok(c) => converter.insert(c),
-                            Err(e) => break Err(e),
-                        },
-                    };
-                    match encoder.submit(&gpu, conv, frame, pts, interval, force) {
+                    let (full, lower) = layers.split_at_mut(1);
+                    match full[0].submit(&gpu, frame, pts) {
                         Ok(true) => {
-                            if force {
-                                want_key = false;
-                                last_forced = pts;
-                            }
                             dirty = false;
                             slot = if !sent_any || now > slot + 2 * interval { now } else { slot + interval };
                             sent_any = true;
                             last_pts = pts;
+                            // Lower layers take every frame their own rate has room for.
+                            for layer in lower.iter_mut().filter(|l| l.interval <= interval || pts + interval / 2 >= l.next_due) {
+                                match layer.submit(&gpu, frame, pts) {
+                                    Ok(true) => {
+                                        layer.next_due = if pts > layer.next_due + layer.interval { pts + layer.interval } else { layer.next_due + layer.interval };
+                                    }
+                                    Ok(false) => {} // busy; it skips this frame
+                                    Err(e) => break 'main Err(e),
+                                }
+                            }
                         }
                         Ok(false) => blocked = true, // encoder busy; NeedInput will wake us
                         Err(e) => break Err(e),
@@ -427,11 +444,90 @@ mod imp {
         if let Some(frame) = held.take() {
             let _ = frame.frame.Close();
         }
-        drop(converter);
         drop(capture);
-        drop(encoder); // drains what's in flight
+        drop(layers); // drains what's in flight
         let _ = candidate.activate.ShutdownObject();
         result
+    }
+
+    /// One simulcast layer: the converter that scales into it, its encoder (rebuilt at each new
+    /// source size) and its own keyframe and frame-rate bookkeeping.
+    struct Layer {
+        index: usize,
+        fps: u32,
+        interval: u64,
+        converter: Option<Converter>,
+        /// None while restarting, and for a lower layer whose encoder couldn't start.
+        encoder: Option<Encoder>,
+        sent_any: bool,
+        want_key: bool,
+        last_forced: u64,
+        /// Lower layers: session time from which the next frame may go.
+        next_due: u64,
+    }
+
+    impl Layer {
+        fn new(index: usize, fps: u32) -> Layer {
+            let interval = 1_000_000 / fps.max(1) as u64;
+            Layer { index, fps, interval, converter: None, encoder: None, sent_any: false, want_key: false, last_forced: 0, next_due: 0 }
+        }
+
+        fn size(&self) -> Option<(u32, u32)> {
+            self.encoder.as_ref().map(|e| e.size)
+        }
+
+        fn stop(&mut self) {
+            self.converter = None;
+            self.encoder = None;
+            self.sent_any = false;
+            self.last_forced = 0;
+            self.next_due = 0;
+        }
+
+        /// Starts a lower layer's encoder for a full layer of `full`. A layer that can't start
+        /// (some drivers cap concurrent encoders) is left out; viewers asking for it get another.
+        #[allow(clippy::too_many_arguments)]
+        unsafe fn start_lower(&mut self, candidate: &Candidate, gpu: &Gpu, full: (u32, u32), settings: VideoSettings, count: usize, clock: Clock, tx: &VideoTx, wake: Handle) {
+            let size = layer_size(full, self.index, count);
+            let size = (size.0.max(MIN_SIDE), size.1.max(MIN_SIDE));
+            let layer_settings = VideoSettings { fps: self.fps, bitrate_kbps: bitrate_kbps(size.1, self.fps).min(settings.bitrate_kbps), ..settings };
+            let started = twin(candidate).and_then(|activate| Encoder::new(activate, gpu, size, layer_settings, self.index, clock, tx.clone(), wake));
+            match started {
+                Ok(encoder) => self.encoder = Some(encoder),
+                Err(e) => eprintln!("live video: layer {} ({}x{}) is off: {e}", self.index, size.0, size.1),
+            }
+        }
+
+        /// Converts `frame` into this layer's encoder. `Ok(false)` when the encoder isn't ready
+        /// for more input yet.
+        unsafe fn submit(&mut self, gpu: &Gpu, frame: &Held, pts: u64) -> Result<bool, String> {
+            let Some(encoder) = &mut self.encoder else { return Ok(false) };
+            let since_idr = pts.saturating_sub(encoder.shared.last_idr_us.load(Ordering::Relaxed).max(self.last_forced));
+            let force = self.want_key || (self.sent_any && since_idr + self.interval / 2 >= IDR_INTERVAL_US);
+            let conv = match &mut self.converter {
+                Some(c) if c.matches(&frame.texture_size, encoder.size) => c,
+                _ => self.converter.insert(Converter::new(gpu, frame.texture_size, encoder.size, self.fps)?),
+            };
+            let queued = encoder.submit(gpu, conv, frame, pts, self.interval, force)?;
+            if queued {
+                if force {
+                    self.want_key = false;
+                    self.last_forced = pts;
+                }
+                self.sent_any = true;
+            }
+            Ok(queued)
+        }
+    }
+
+    /// A separate activation object for the same encoder: activating one object twice hands back
+    /// the same MFT, and every layer needs one of its own.
+    unsafe fn twin(candidate: &Candidate) -> Result<IMFActivate, String> {
+        hardware_encoders()?
+            .into_iter()
+            .find(|c| c.name == candidate.name && c.luid == candidate.luid)
+            .map(|c| c.activate)
+            .ok_or_else(|| format!("{} is no longer available", candidate.name))
     }
 
     // Windows only honours `IsBorderRequired = false` once borderless access has been requested;
@@ -822,18 +918,19 @@ mod imp {
     }
 
     impl Encoder {
+        #[allow(clippy::too_many_arguments)]
         unsafe fn new(
-            candidate: &Candidate,
+            activate: IMFActivate,
             gpu: &Gpu,
             size: (u32, u32),
             settings: VideoSettings,
+            layer: usize,
             clock: Clock,
             tx: VideoTx,
             wake: Handle,
         ) -> Result<Encoder, String> {
-            let activate = candidate.activate.clone();
             let mft: IMFTransform = activate.ActivateObject().map_err(err("starting the encoder"))?;
-            let result = Self::configure(mft.clone(), activate.clone(), gpu, size, settings, clock, tx, wake);
+            let result = Self::configure(mft.clone(), activate.clone(), gpu, size, settings, layer, clock, tx, wake);
             if result.is_err() {
                 let _ = activate.ShutdownObject();
             }
@@ -847,6 +944,7 @@ mod imp {
             gpu: &Gpu,
             size: (u32, u32),
             settings: VideoSettings,
+            layer: usize,
             clock: Clock,
             tx: VideoTx,
             wake: Handle,
@@ -932,6 +1030,7 @@ mod imp {
                 provides,
                 buffer_size: info.cbSize.max(1 << 20),
                 params,
+                layer,
                 size,
                 tx,
                 shared: shared.clone(),
@@ -1014,6 +1113,7 @@ mod imp {
         buffer_size: u32,
         /// Last SPS+PPS seen, in Annex B, for IDRs that come without them.
         params: Vec<u8>,
+        layer: usize,
         size: (u32, u32),
         tx: VideoTx,
         shared: Arc<Shared>,
@@ -1093,7 +1193,7 @@ mod imp {
             if keyframe {
                 self.shared.last_idr_us.store(pts_us, Ordering::Relaxed);
             }
-            self.send(EncodedVideo { data, pts_us, keyframe, width: self.size.0, height: self.size.1 });
+            self.send(EncodedVideo { data, pts_us, keyframe, layer: self.layer, width: self.size.0, height: self.size.1 });
             Ok(())
         }
 

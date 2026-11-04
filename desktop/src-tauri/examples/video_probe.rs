@@ -2,7 +2,9 @@
 //! primary monitor), runs `live::video::start` for a few seconds, writes the Annex B stream to a
 //! file and prints frame, keyframe, latency and CPU numbers. Check the file with ffprobe/ffmpeg.
 //!
-//! cargo run --example video_probe -- <window|monitor|resize|static|close> <out.h264> [seconds] [height] [fps] [kbps]
+//! cargo run --example video_probe -- <window|monitor|resize|static|close> <out.h264> [seconds] [height] [fps] [kbps] [layers]
+//!
+//! With more than one layer only the full layer goes to the file; every layer's numbers are printed.
 
 #[cfg(not(windows))]
 fn main() {
@@ -42,7 +44,7 @@ mod probe {
         let out = args.get(2).cloned().unwrap_or_else(|| std::env::temp_dir().join("video_probe.h264").display().to_string());
         let arg = |i: usize, d: u32| args.get(i).and_then(|s| s.parse().ok()).unwrap_or(d);
         let seconds = arg(3, 5);
-        let settings = VideoSettings { height: arg(4, 1080), fps: arg(5, 60), bitrate_kbps: arg(6, 8000) };
+        let settings = VideoSettings { height: arg(4, 1080), fps: arg(5, 60), bitrate_kbps: arg(6, 8000), layers: arg(7, 1) };
 
         let (hwnd_tx, hwnd_rx) = mpsc::channel();
         let window = std::thread::spawn(move || unsafe { window_thread(hwnd_tx) });
@@ -81,6 +83,8 @@ mod probe {
         let mut requested_at = None;
         let mut request_answered = None;
         let mut step = 0;
+        // Per lower layer: frames, bytes, IDRs, sizes seen.
+        let mut lower: std::collections::BTreeMap<usize, (u32, usize, u32, Vec<(u32, u32)>)> = Default::default();
         let deadline = Duration::from_secs(seconds as u64);
         while t0.elapsed() < deadline {
             let elapsed = t0.elapsed().as_secs_f32();
@@ -106,10 +110,19 @@ mod probe {
                 step = 1;
             }
             if requested_at.is_none() && elapsed > 2.7 {
-                let _ = key_tx.try_send(());
+                let _ = key_tx.try_send(None);
                 requested_at = Some(clock.now_us());
             }
             match rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(frame) if frame.layer > 0 => {
+                    let entry = lower.entry(frame.layer).or_default();
+                    entry.0 += 1;
+                    entry.1 += frame.data.len();
+                    entry.2 += frame.keyframe as u32;
+                    if entry.3.last() != Some(&(frame.width, frame.height)) {
+                        entry.3.push((frame.width, frame.height));
+                    }
+                }
                 Ok(frame) => {
                     let now = clock.now_us();
                     if frame.pts_us <= last_pts && frames > 0 {
@@ -149,6 +162,9 @@ mod probe {
         let cpu = cpu_time() - cpu0;
         stage.stop();
         while let Ok(frame) = rx.try_recv() {
+            if frame.layer > 0 {
+                continue;
+            }
             frames += 1;
             bytes += frame.data.len();
             file.write_all(&frame.data).unwrap();
@@ -167,6 +183,9 @@ mod probe {
         println!("keyframe request answered in: {:?} ms", request_answered.map(|us| us as f64 / 1000.0));
         println!("capture→encoded latency ms: p50 {:.1} p95 {:.1} max {:.1}", pct(0.5), pct(0.95), pct(1.0));
         println!("sizes: {sizes:?}");
+        for (layer, (n, b, k, sizes)) in &lower {
+            println!("layer {layer}: {:.1} fps, {:.0} kbps, {k} IDR, sizes {sizes:?}", *n as f64 / span.max(0.001), *b as f64 * 8.0 / span.max(0.001) / 1000.0);
+        }
         println!("process CPU: {:.1}% of one core", cpu.as_secs_f64() / wall.as_secs_f64() * 100.0);
         println!("wrote {out}");
     }

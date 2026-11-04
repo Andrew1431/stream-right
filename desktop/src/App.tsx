@@ -3,7 +3,7 @@ import { SidebarGlyph } from "../../ui/SidebarGlyph";
 import { onDeepLink } from "./deeplink";
 import { GoLiveSheet } from "./GoLiveSheet";
 import { useUpdates } from "./updates";
-import { onLiveEvent, startLive, stopLive, type LiveEvent, type Whip } from "./live";
+import { mbps, onLiveEvent, startLive, stopLive, type LiveEvent, type Whip } from "./live";
 import { inShell, openExternal } from "./native";
 import { NewRoomSheet, RoomMenu, ServerUsage } from "./OwnerTools";
 import { Sheet } from "./Sheet";
@@ -60,6 +60,8 @@ export function App() {
   const [goLive, setGoLive] = useState(false);
   // The one native stream this app runs, and the room it's going into.
   const [live, setLive] = useState<{ origin: string; room: string; event: LiveEvent } | null>(null);
+  // Measured upload while live (all video layers plus audio), 0 until the first stats.
+  const [upload, setUpload] = useState(0);
   const [liveError, setLiveError] = useState("");
   const updates = useUpdates();
   const requestWhip = useRef<(() => Promise<Whip>) | null>(null);
@@ -69,14 +71,21 @@ export function App() {
         if (event.state === "stopped") {
           setLive(null);
           if (event.error) setLiveError(event.error);
+          setUpload(0);
           return;
         }
+        if (event.state === "stats") {
+          setUpload(event.video_kbps + event.audio_kbps);
+          return;
+        }
+        if (event.state !== "live") setUpload(0);
         setLive((l) => (l ? { ...l, event } : l));
       }),
     [],
   );
   async function stopStreaming() {
     setLive(null);
+    setUpload(0);
     await stopLive().catch((e) => setLiveError(String(e)));
   }
   const [editingServer, setEditingServer] = useState(false);
@@ -237,6 +246,7 @@ export function App() {
             sidebarHidden={hidden}
             liveElsewhere={liveElsewhere}
             live={!!live && live.origin === server.origin && live.room === room.id}
+            uploadKbps={upload}
             whip={requestWhip}
             onToggleSidebar={toggleSidebar}
             onGoLive={() => setGoLive(true)}
@@ -313,14 +323,14 @@ export function App() {
         <GoLiveSheet
           roomName={room.id}
           onClose={() => setGoLive(false)}
-          onStart={async (source, audio, settings, sourceHeight) => {
+          onStart={async (source, audio, settings, sourceHeight, layers) => {
             const ask = requestWhip.current;
             if (!ask) throw new Error("The room is still loading");
             const whip = await ask();
             setLiveError("");
             setLive({ origin: server.origin, room: room.id, event: { state: "connecting" } });
             try {
-              await startLive(whip, source, audio, settings, sourceHeight);
+              await startLive(whip, source, audio, settings, sourceHeight, layers);
             } catch (e) {
               setLive(null);
               throw e;
@@ -383,6 +393,7 @@ function RoomFrame(props: {
   sidebarHidden: boolean;
   liveElsewhere: boolean;
   live: boolean;
+  uploadKbps: number;
   // Set to a function that asks the room for its WHIP endpoint and token.
   whip: { current: (() => Promise<Whip>) | null };
   onToggleSidebar: () => void;
@@ -465,10 +476,10 @@ function RoomFrame(props: {
   useEffect(() => {
     if (bridge !== "ok") return;
     frame.current?.contentWindow?.postMessage(
-      { source: "stream-shell", type: "state", sidebarHidden: props.sidebarHidden, liveElsewhere: props.liveElsewhere, creatorKey: props.creatorKey, live: props.live },
+      { source: "stream-shell", type: "state", sidebarHidden: props.sidebarHidden, liveElsewhere: props.liveElsewhere, creatorKey: props.creatorKey, live: props.live, uploadKbps: props.live ? props.uploadKbps : 0 },
       props.origin,
     );
-  }, [bridge, hello, props.sidebarHidden, props.liveElsewhere, props.creatorKey, props.origin, props.live]);
+  }, [bridge, hello, props.sidebarHidden, props.liveElsewhere, props.creatorKey, props.origin, props.live, props.uploadKbps]);
 
   const label = props.sidebarHidden ? "Show servers and rooms (Ctrl+B)" : "Hide servers and rooms (Ctrl+B)";
   return (
@@ -484,6 +495,7 @@ function RoomFrame(props: {
             <span className="muted small" title="Its owner can update it to get the app's layout">This server's stream is older than the app</span>
           </div>
           <div className="row">
+            {props.live && props.uploadKbps > 0 && <span className="muted small">{mbps(props.uploadKbps)} up</span>}
             {props.live ? (
               <button type="button" className="danger" onClick={props.onStopLive}>Stop streaming</button>
             ) : (
