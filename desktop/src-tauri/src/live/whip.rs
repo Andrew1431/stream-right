@@ -242,6 +242,18 @@ impl<F: Fn(LiveEvent)> Sender_<'_, F> {
                 stats_at = now + Duration::from_secs(1);
             }
 
+            // str0m packetizes queued frames only in handle_timeout, so it has to run whenever its
+            // deadline passes, even with messages waiting: with simulcast they always are, and its
+            // queue would overflow.
+            if deadline <= now {
+                if let Err(e) = c.rtc.handle_input(Input::Timeout(now)) {
+                    eprintln!("whip: {e}");
+                    self.drop_conn(&agent, conn.take());
+                    attempt += 1;
+                }
+                continue;
+            }
+
             let wait = deadline.min(stats_at).saturating_duration_since(now).clamp(Duration::from_millis(1), Duration::from_millis(100));
             let msg = match self.rx.recv_timeout(wait) {
                 Ok(m) => m,
