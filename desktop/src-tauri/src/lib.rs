@@ -1,4 +1,7 @@
 mod capture;
+// Native Go live; the stages are being built, nothing calls them yet.
+#[allow(dead_code)]
+mod live;
 mod windows_list;
 
 pub fn run() {
