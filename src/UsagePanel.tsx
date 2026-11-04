@@ -1,17 +1,10 @@
 import { useEffect, useState } from "react";
 import type { UsageResponse } from "../shared/protocol";
+import { DASHBOARD, PRICE_PER_GB, UsageBar, dollars, gb, overCost, type Usage } from "../ui/usage";
 import type { Subscriber } from "./media";
 
-export const DASHBOARD = "https://dash.cloudflare.com/?to=/:account/realtime/sfu";
-const PRICE_PER_GB = 0.05;
 const REFRESH_MS = 60_000;
 const RATE_SAMPLE_MS = 2_000;
-
-export const gb = (bytes: number, digits = 0) =>
-  (bytes / 1e9).toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
-const dollars = (n: number) => `$${n.toFixed(n < 10 ? 2 : 0)}`;
-
-export type Usage = Extract<UsageResponse, { egressBytes: number }>;
 
 // Polls /api/usage while `active`. Null until a usable answer arrives (no token, bad key, or an API error).
 export function useUsage(creatorKey: string, active = true): Usage | null {
@@ -72,7 +65,6 @@ export function UsagePanel(props: { usage: Usage; subscriber: Subscriber | null;
   const used = usage.egressBytes;
   const free = usage.freeBytes;
   const left = Math.max(0, free - used);
-  const share = used / free;
   const perHour = usage.lastHourBytes;
   const over = used >= free;
   const costPerHour = (perHour / 1e9) * PRICE_PER_GB;
@@ -84,13 +76,7 @@ export function UsagePanel(props: { usage: Usage; subscriber: Subscriber | null;
         <button type="button" className="link small" onClick={props.onClose}>Close</button>
       </div>
 
-      <div
-        className={`usage-bar${over ? " over" : share >= 0.8 ? " near" : ""}`}
-        role="img"
-        aria-label={`${gb(used)} of ${gb(free)} free gigabytes used this month`}
-      >
-        <span style={{ width: `${Math.min(share, 1) * 100}%` }} />
-      </div>
+      <UsageBar used={used} free={free} />
       <p className="small">
         <strong>{gb(used, used < 10e9 ? 1 : 0)} GB</strong> <span className="muted">of {gb(free)} GB free this month</span>
       </p>
@@ -105,7 +91,7 @@ export function UsagePanel(props: { usage: Usage; subscriber: Subscriber | null;
         <dt>{over ? "Cost now" : "Cost after free"}</dt>
         <dd>
           {dollars(costPerHour)} an hour
-          {over && <span className="muted"> · {dollars(((used - free) / 1e9) * PRICE_PER_GB)} so far this month</span>}
+          {over && <span className="muted"> · {dollars(overCost(usage))} so far this month</span>}
         </dd>
 
         {!over && (

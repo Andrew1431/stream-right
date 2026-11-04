@@ -5,6 +5,7 @@ import { ClipsNotice, clipsBadgeHint, ClipsPanel, playShutter, Toasts, useClipSt
 import { RoomConnection, type RoomStatus } from "./connection";
 import { QualityPicker, useShareQuality } from "../ui/QualityPicker";
 import { SidebarGlyph } from "../ui/SidebarGlyph";
+import { gb } from "../ui/usage";
 import { askShell, inDesktop, useShell } from "./desktop";
 import { Publisher, settingsLabel, Subscriber, type Layer } from "./media";
 import { forgetObsKey, loadObsKey, ObsPanel, obsKeyId } from "./ObsPanel";
@@ -573,10 +574,10 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
             <button
               type="button"
               className={showUsage ? "meter-key active" : "meter-key"}
-              title={`${Math.round(usage.egressBytes / 1e9).toLocaleString()} of ${Math.round(usage.freeBytes / 1e9).toLocaleString()} free GB used this month`}
+              title={`${gb(usage.egressBytes)} of ${gb(usage.freeBytes)} free GB used this month`}
               onClick={() => setShowUsage((s) => !s)}
             >
-              {Math.round(usage.egressBytes / 1e9).toLocaleString()} GB
+              {gb(usage.egressBytes)} GB
               <span className="meter-track" aria-hidden="true">
                 <span style={{ width: `${(1 - Math.min(usage.egressBytes / usage.freeBytes, 1)) * 100}%` }} />
               </span>
@@ -624,7 +625,7 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
                   ...(usage
                     ? [{
                         label: "Streaming usage",
-                        hint: `${Math.round(usage.egressBytes / 1e9).toLocaleString()} of ${Math.round(usage.freeBytes / 1e9).toLocaleString()} GB this month`,
+                        hint: `${gb(usage.egressBytes)} of ${gb(usage.freeBytes)} GB this month`,
                         onSelect: () => setShowUsage(true),
                       }]
                     : []),
