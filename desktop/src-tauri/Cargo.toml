@@ -16,8 +16,13 @@ tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 base64 = "0.23.1"
+# Native Go live sender: sans-IO WebRTC, plus a blocking HTTP client for WHIP.
+str0m = { version = "0.25", default-features = false }
+ureq = "3"
 
 [target.'cfg(windows)'.dependencies]
+# Native Go live sender on Windows CNG crypto (str0m is declared below).
+str0m = { version = "0.25", default-features = false, features = ["wincrypto"] }
 windows = { version = "0.61", features = [
   "Foundation",
   "Graphics",
@@ -40,6 +45,11 @@ windows = { version = "0.61", features = [
   "Win32_UI_WindowsAndMessaging",
 ] }
 
+[dev-dependencies]
+# examples/whip_probe.rs: synthetic H.264 and Opus to test the WHIP sender without capture.
+openh264 = "0.9"
+opus1 = "0.3"
+
 [profile.release]
 codegen-units = 1
 lto = true
@@ -52,4 +62,8 @@ strip = true
 opt-level = 3
 
 [profile.dev.package.zune-jpeg]
+opt-level = 3
+
+# The probe's software encoder can't hold 30 fps at 720p unoptimized.
+[profile.dev.package.openh264-sys2]
 opt-level = 3
