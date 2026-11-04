@@ -161,6 +161,8 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
   const [obsKey, setObsKey] = useState(() => loadObsKey(props.roomId));
   const [myObsKeyId, setMyObsKeyId] = useState("");
   const [obsPreview, setObsPreview] = useState(false);
+  // The corner preview is blown up to the overlay or fullscreen.
+  const [previewLarge, setPreviewLarge] = useState(false);
   // Device-pixel size of each big tile, and each source's real resolution once seen.
   const [tileSizes, setTileSizes] = useState<Record<string, Size>>({});
   const [sources, setSources] = useState<Record<string, { height: number; aspect: number }>>({});
@@ -254,6 +256,8 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
   const split = layout === "split" && watching.length > 1;
   const remoteCount = watching.length;
   const me = members.find((m) => m.id === you);
+  // The desktop app streams into the room over WHIP, so its stream shows up as your OBS member.
+  const appLive = inDesktop && !!shell?.live;
 
   // Big tiles get the chosen quality. Auto picks the smallest layer that still fills the tile,
   // and lets the SFU step down further when bandwidth is short.
@@ -265,6 +269,12 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
     return { rid: RIDS[Math.min(index, RIDS.length - 1)], fixed: false };
   };
   const bigLayers = new Map(watching.map((m) => [m.id, layerFor(m)]));
+  // Your own OBS/app stream: the thumbnail layer in the corner; enlarged, the layer that fits it,
+  // picked like Auto on a big tile, so you see what viewers at that size see.
+  const obsIndex = myObs?.stream && previewLarge
+    ? (autoLayerIndex(myObs.stream, tileSizes[myObs.id], sources[myObs.stream.sessionId]) ?? 0)
+    : null;
+  const obsLayer: Layer = obsIndex === null ? THUMB_LAYER : { rid: RIDS[Math.min(obsIndex, RIDS.length - 1)], fixed: false };
   const layersKey = [...bigLayers].map(([id, l]) => `${id}:${l.rid}:${l.fixed}`).join("|");
 
   // Learn each source's real resolution from what arrives, given the layer we asked for.
@@ -310,9 +320,14 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
         if (prev?.index !== index) requested.current.set(m.stream.sessionId, { index, at: performance.now() });
       }
     }
-    if (myObs?.stream && obsPreview && pageActive) want.set(myObs.stream, THUMB_LAYER);
+    if (myObs?.stream && obsPreview && pageActive) {
+      want.set(myObs.stream, obsLayer);
+      const index = RIDS.indexOf(obsLayer.rid);
+      const prev = requested.current.get(myObs.stream.sessionId);
+      if (prev?.index !== index) requested.current.set(myObs.stream.sessionId, { index, at: performance.now() });
+    }
     subscriber.sync(want);
-  }, [subscriber, streamingKey(streaming), myObsKeyId, focused?.id, split, layersKey, tabHidden, obsPreview, pageActive]);
+  }, [subscriber, streamingKey(streaming), myObsKeyId, focused?.id, split, layersKey, tabHidden, obsPreview, pageActive, obsLayer.rid]);
 
   // Everyone sees who keeps a buffer. Re-sent on every (re)join: presence is per connection.
   useEffect(() => {
@@ -640,7 +655,7 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
                         onSelect: () => setShowUsage(true),
                       }]
                     : []),
-                  { label: "Stream from OBS", hint: myObs ? "You're live" : "Server and token", onSelect: () => setShowObs(true) },
+                  { label: "Stream from OBS", hint: myObs && !appLive ? "You're live" : "Server and token", onSelect: () => setShowObs(true) },
                   ...(inDesktop && !localStream && !myObs
                     ? [{ label: "Share with the browser picker", hint: settingsLabel(settings), onSelect: startShare }]
                     : []),
@@ -726,21 +741,40 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
       )}
 
       {((localStream && me) || myObs) && (
-        <SelfPreview title={localStream && myObs ? "You're live (browser + OBS)" : myObs ? "You're live from OBS" : "You're sharing"}>
+        <SelfPreview
+          title={
+            localStream && myObs
+              ? `You're live (browser + ${appLive ? "app" : "OBS"})`
+              : myObs
+                ? appLive ? "You're live from the app" : "You're live from OBS"
+                : "You're sharing"
+          }
+          onLargeChange={setPreviewLarge}
+        >
           {localStream && me && (
             <VideoTile member={me} stream={localStream} isYou paused={!pageActive} />
           )}
           {myObs &&
             (obsPreview ? (
-              <VideoTile member={myObs} stream={streamFor(myObs)} isYou paused={!pageActive} />
+              <VideoTile
+                member={myObs}
+                label={appLive ? (me?.name ?? props.name) : undefined}
+                stream={streamFor(myObs)}
+                isYou
+                paused={!pageActive}
+                onSize={(w, h) => onTileSize(myObs.id, w, h)}
+                onVideoSize={(w, h) => onRemoteVideo(myObs, w, h)}
+              />
             ) : (
               <div className="obs-live-card small">
-                <span className="muted">Your OBS stream is live. Previewing it pulls it back down, which uses bandwidth.</span>
+                <span className="muted">
+                  {appLive ? "You're streaming from the app." : "Your OBS stream is live."} Previewing it pulls it back down, which uses bandwidth.
+                </span>
                 <button type="button" className="chip" onClick={() => setObsPreview(true)}>Show preview</button>
               </div>
             ))}
           {myObs && obsPreview && (
-            <button type="button" className="link small" onClick={() => setObsPreview(false)}>Hide OBS preview</button>
+            <button type="button" className="link small" onClick={() => setObsPreview(false)}>{appLive ? "Hide preview" : "Hide OBS preview"}</button>
           )}
         </SelfPreview>
       )}
@@ -787,6 +821,8 @@ function streamingKey(members: Member[]): string {
 
 function VideoTile(props: {
   member: Member;
+  // Shown instead of the member's name.
+  label?: string;
   stream: MediaStream | null;
   isYou: boolean;
   big?: boolean;
@@ -825,13 +861,13 @@ function VideoTile(props: {
   }, [!!props.onSize]);
 
   useEffect(() => {
-    if (!props.stream || props.isYou) return;
+    if (!props.stream || !props.onVideoSize) return;
     const id = setInterval(() => {
       const v = ref.current;
       if (v?.videoWidth) callbacks.current.onVideoSize?.(v.videoWidth, v.videoHeight);
     }, 2000);
     return () => clearInterval(id);
-  }, [props.stream, props.isYou]);
+  }, [props.stream, !!props.onVideoSize]);
 
   // Detaching the stream while paused stops the element from compositing frames; the
   // track itself keeps feeding the encoder, so viewers are unaffected.
@@ -860,7 +896,7 @@ function VideoTile(props: {
         !props.stream && <div className="tile-empty">Connecting…</div>
       )}
       <div className="tile-label">
-        {props.member.name}
+        {props.label ?? props.member.name}
         {props.isYou && " (you)"}
         {stats && <span className="muted"> · {stats}</span>}
         {props.clipsOff && <span className="muted" title="This streamer doesn't allow clips of their stream"> · No clips</span>}

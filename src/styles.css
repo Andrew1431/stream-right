@@ -985,6 +985,9 @@ button.thumb:hover .tile {
 .self-preview {
   position: fixed;
   width: 280px;
+  max-height: calc(100vh - 16px);
+  display: flex;
+  flex-direction: column;
   z-index: 10;
   padding: 1px;
   border-radius: 14px;
@@ -992,7 +995,7 @@ button.thumb:hover .tile {
   box-shadow: var(--float);
 }
 
-.self-preview > * {
+.self-preview > :not(.self-preview-resize) {
   background: var(--brushed), linear-gradient(180deg, var(--steel-hi), var(--steel-lo));
 }
 
@@ -1017,23 +1020,148 @@ button.thumb:hover .tile {
   border-radius: 13px;
 }
 
+.self-preview-bar .grow {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .self-preview-bar:active {
   cursor: grabbing;
 }
 
 .self-preview-bar button {
-  padding: 2px 8px;
+  display: grid;
+  place-items: center;
+  min-height: 22px;
+  padding: 2px 7px;
   border: none;
   background: none;
   box-shadow: none;
   color: var(--pewter);
 }
 
+.self-preview-bar button:hover {
+  color: var(--platinum);
+  filter: none;
+}
+
 .self-preview-body {
   display: grid;
   gap: 8px;
+  min-height: 0;
+  overflow-y: auto;
   padding: 0 8px 8px;
   border-radius: 0 0 13px 13px;
+}
+
+/* Resize grip on the top-left corner, opposite the bottom-right anchor: a few machined ridges. */
+.self-preview-resize {
+  position: absolute;
+  top: -1px;
+  left: -1px;
+  width: 18px;
+  height: 18px;
+  border-radius: 14px 0 0 0;
+  cursor: nwse-resize;
+  touch-action: none;
+  background: linear-gradient(
+    135deg,
+    transparent 0 30%,
+    var(--pewter) 30% 36%,
+    transparent 36% 48%,
+    var(--pewter) 48% 54%,
+    transparent 54%
+  );
+  opacity: 0.5;
+}
+
+.self-preview-resize:hover,
+.self-preview-resize:focus-visible {
+  opacity: 1;
+}
+
+.self-preview:has(.self-preview-resize) .self-preview-bar {
+  padding-left: 18px;
+}
+
+/* Bigger: a centered overlay over a dimmed room, sized so 16:9 fits the window. */
+.self-preview-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 44;
+  background: rgb(8 9 11 / 0.72);
+}
+
+.self-preview.expanded {
+  top: 50%;
+  left: 50%;
+  z-index: 45;
+  width: min(94vw, calc((94vh - 110px) * 16 / 9));
+  max-height: 94vh;
+  transform: translate(-50%, -50%);
+}
+
+.self-preview.expanded .self-preview-bar {
+  cursor: default;
+}
+
+.self-preview.fullscreen {
+  inset: 0;
+  transform: none;
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  padding: 0;
+  border-radius: 0;
+}
+
+.self-preview.fullscreen .self-preview-bar,
+.self-preview.fullscreen .self-preview-body {
+  border-radius: 0;
+}
+
+.self-preview.fullscreen .self-preview-bar {
+  cursor: default;
+}
+
+.self-preview.fullscreen .self-preview-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.self-preview.fullscreen .self-preview-body > .tile {
+  flex: 1 1 0;
+  aspect-ratio: auto;
+}
+
+.self-preview.fullscreen .self-preview-body > :not(.tile) {
+  flex: none;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .self-preview.expanded {
+    animation: preview-grow 0.16s ease-out;
+  }
+
+  .self-preview-scrim {
+    animation: preview-fade 0.16s ease-out;
+  }
+}
+
+@keyframes preview-grow {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.96);
+  }
+}
+
+@keyframes preview-fade {
+  from {
+    opacity: 0;
+  }
 }
 
 .live-dot {
