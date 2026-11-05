@@ -14,6 +14,7 @@ export type LiveEvent =
   | { state: "stopped"; error: string | null };
 
 export type Whip = { endpoint: string; token: string };
+export type LiveTarget = { origin: string; room: string };
 
 // Roughly what the browser share asks for at the same size and rate: 6 Mbps at 1080p60.
 export function bitrateKbps(height: number, fps: number): number {
@@ -47,6 +48,7 @@ export async function startLive(
   settings: ShareSettings,
   sourceHeight: number,
   layers: LayerCount,
+  target: LiveTarget,
 ) {
   if (!inShell) throw new Error("Native streaming needs the desktop app");
   const height = settings.height || sourceHeight;
@@ -55,9 +57,15 @@ export async function startLive(
       ...whip,
       source,
       audio,
+      target,
       settings: { height: settings.height, fps: settings.fps, bitrate_kbps: bitrateKbps(height, settings.fps), layers },
     },
   });
+}
+
+// The stream the app is already running, if any: it keeps going when the UI reloads.
+export async function liveStatus(): Promise<LiveTarget | null> {
+  return inShell ? invoke<LiveTarget | null>("live_status") : null;
 }
 
 export async function stopLive() {

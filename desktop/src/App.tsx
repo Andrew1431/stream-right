@@ -3,7 +3,7 @@ import { SidebarGlyph } from "../../ui/SidebarGlyph";
 import { onDeepLink } from "./deeplink";
 import { GoLiveSheet } from "./GoLiveSheet";
 import { useUpdates } from "./updates";
-import { mbps, onLiveEvent, startLive, stopLive, type LiveEvent, type Whip } from "./live";
+import { liveStatus, mbps, onLiveEvent, startLive, stopLive, type LiveEvent, type Whip } from "./live";
 import { inShell, openExternal } from "./native";
 import { NewRoomSheet, RoomMenu, ServerUsage } from "./OwnerTools";
 import { Sheet } from "./Sheet";
@@ -83,6 +83,11 @@ export function App() {
       }),
     [],
   );
+  useEffect(() => {
+    liveStatus()
+      .then((target) => target && setLive((l) => l ?? { ...target, event: { state: "live" } }))
+      .catch(() => {});
+  }, []);
   async function stopStreaming() {
     setLive(null);
     setUpload(0);
@@ -330,7 +335,7 @@ export function App() {
             setLiveError("");
             setLive({ origin: server.origin, room: room.id, event: { state: "connecting" } });
             try {
-              await startLive(whip, source, audio, settings, sourceHeight, layers);
+              await startLive(whip, source, audio, settings, sourceHeight, layers, { origin: server.origin, room: room.id });
             } catch (e) {
               setLive(null);
               throw e;

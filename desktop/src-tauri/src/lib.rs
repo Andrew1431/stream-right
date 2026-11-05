@@ -44,6 +44,7 @@ pub fn run() {
             admin::server_request,
             live::session::go_live,
             live::session::stop_live,
+            live::session::live_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running stream");
