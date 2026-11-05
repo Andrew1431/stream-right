@@ -6,6 +6,7 @@ interface __BaseEnv_Env {
 	REALTIME_APP_ID: string;
 	REALTIME_APP_SECRET: string;
 	ROOMS: DurableObjectNamespace<import("./index").Room>;
+	ASSETS: Fetcher;
 }
 declare namespace Cloudflare {
 	interface GlobalProps {

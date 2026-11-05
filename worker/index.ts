@@ -52,9 +52,42 @@ async function createRoom(req: Request, env: Env): Promise<Response> {
   return json({ roomId, token: result.token, ownerKey: result.ownerKey } satisfies CreateRoomResponse, 201);
 }
 
+// What a chat app shows for an invite link. The room's token is in the URL fragment, which link
+// previews never send, so this can't say whether the room is live and says nothing private.
+function withLinkPreview(page: Response, room: string, url: URL, ua: string): Response {
+  const tags = [
+    ["og:site_name", "stream"],
+    ["og:type", "website"],
+    ["og:title", `View streams in #${room}`],
+    ["og:description", "Friends streaming their screens. Click to watch."],
+    ["og:image", `${url.origin}/og.png`],
+    ["og:image:width", "1200"],
+    ["og:image:height", "630"],
+  ].map(([property, content]) => `<meta property="${property}" content="${content}" />`);
+  tags.push(`<meta name="twitter:card" content="summary_large_image" />`);
+
+  const rewriter = new HTMLRewriter().on("head", {
+    element: (head) => void head.append(tags.join(""), { html: true }),
+  });
+  // Discord colours the embed's edge from theme-color; browsers would tint their toolbar with it.
+  if (ua.includes("Discordbot")) {
+    rewriter.on('meta[name="theme-color"]', {
+      element: (meta) => void meta.setAttribute("content", "#ff5a4e"),
+    });
+  }
+  return rewriter.transform(page);
+}
+
 export default {
   async fetch(req, env): Promise<Response> {
-    const { pathname } = new URL(req.url);
+    const url = new URL(req.url);
+    const { pathname } = url;
+
+    if (pathname.startsWith("/r/")) {
+      const page = await env.ASSETS.fetch(new URL("/", url));
+      const room = pathname.match(/^\/r\/([^/]+)\/?$/)?.[1];
+      return room && ROOM_ID_PATTERN.test(room) ? withLinkPreview(page, room, url, req.headers.get("User-Agent") ?? "") : page;
+    }
 
     if (pathname === "/api/usage") {
       if (!(await isAdmin(req, env))) return json({ error: "Invalid creator key" }, 401);
