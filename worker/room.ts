@@ -84,7 +84,7 @@ const toMember = ({ id, name, joinedAt, stream, buffering }: Authed): Member => 
 
 const obsMember = (s: ObsStream): Member => ({
   id: `obs-${s.resourceId}`,
-  name: `${s.name} (OBS)`,
+  name: s.name,
   joinedAt: s.startedAt,
   stream: {
     sessionId: s.sessionId,
@@ -149,7 +149,9 @@ export class Room extends DurableObject<Env> {
     const tokenHash = await this.ctx.storage.get<string>("tokenHash");
     if (!tokenHash || !(await safeEqual(await sha256Hex(token), tokenHash))) return { ok: false };
     const members = this.members();
-    return { ok: true, people: members.length, live: members.filter((m) => m.stream).length };
+    // A name is one person, however many tabs, apps or streams they have here.
+    const names = (list: Member[]) => new Set(list.map((m) => m.name)).size;
+    return { ok: true, people: names(members), live: names(members.filter((m) => m.stream)) };
   }
 
   async fetch(req: Request): Promise<Response> {

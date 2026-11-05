@@ -238,7 +238,7 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
   // Your own streams (browser share and OBS) stay in a small corner preview: showing them full
   // size recaptures your screen in a feedback loop, and pulling your own OBS stream costs bandwidth.
   // OBS streams match by token fingerprint, or by name when this browser no longer has the
-  // token (incognito, cleared storage, another device): "<your name> (OBS)".
+  // token (incognito, cleared storage, another device).
   // Keep the OBS stream under your current name, even if its token came from another browser.
   useEffect(() => {
     if (status.kind === "connected" && obsKey) conn.request({ op: "claimObs", obsKey }).catch(() => {});
@@ -253,7 +253,7 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
 
   const isMine = (m: Member) =>
     m.id === you ||
-    (!!m.obs && ((!!myObsKeyId && m.obsKeyId === myObsKeyId) || m.name === `${props.name} (OBS)`));
+    (!!m.obs && ((!!myObsKeyId && m.obsKeyId === myObsKeyId) || m.name === props.name));
   const watching = streaming.filter((m) => !isMine(m));
   const myObs = streaming.find((m) => m.obs && isMine(m)) ?? null;
   const clippable = watching.filter((m) => m.stream && !m.stream.noClips);
@@ -1079,7 +1079,7 @@ function QualityMenu(props: { name: string; value: Quality; layered: boolean; on
 
   if (!props.layered) {
     return (
-      <span className="quality-pill fixed" title={`${props.name} sends a single quality, set in their OBS`}>
+      <span className="quality-pill fixed" title={`${props.name} sends a single quality`}>
         Source
       </span>
     );
@@ -1166,7 +1166,16 @@ function StatusBadge({ status }: { status: RoomStatus }) {
 
 // A head-and-shoulders count of who's here; the names show on hover or focus.
 function Participants({ members, you }: { members: Member[]; you: string | null }) {
-  const people = members.filter((m) => !m.obs).length;
+  // A name is one person, however many tabs, apps or streams they have here.
+  const byName = new Map<string, { name: string; live: boolean; isYou: boolean; buffering: boolean }>();
+  for (const m of members) {
+    const p = byName.get(m.name) ?? { name: m.name, live: false, isYou: false, buffering: false };
+    p.live ||= !!m.stream;
+    p.isYou ||= m.id === you;
+    p.buffering ||= !!m.buffering;
+    byName.set(m.name, p);
+  }
+  const people = byName.size;
   return (
     <div className="participants" tabIndex={0} aria-label={`${people} ${people === 1 ? "person" : "people"} in the room`}>
       <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
@@ -1176,10 +1185,10 @@ function Participants({ members, you }: { members: Member[]; you: string | null 
       <span className="participants-count">{people}</span>
       <div className="participants-pop" role="tooltip">
         <ul className="people">
-          {members.map((m) => (
-            <li key={m.id} className={m.stream ? "live" : ""}>
+          {[...byName.values()].map((m) => (
+            <li key={m.name} className={m.live ? "live" : ""}>
               <span className="person-name">{m.name}</span>
-              {m.id === you && <span className="muted"> (you)</span>}
+              {m.isYou && <span className="muted"> (you)</span>}
               {m.buffering && (
                 <span className="buffering" role="img" title="Keeping a clip buffer of the streams they watch" aria-label="keeping a clip buffer" />
               )}
