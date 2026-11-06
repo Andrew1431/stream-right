@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { SidebarGlyph } from "../../ui/SidebarGlyph";
 import { onDeepLink } from "./deeplink";
-import { GoLiveSheet } from "./GoLiveSheet";
+import { GoLiveSheet, ModifySheet } from "./GoLiveSheet";
 import { useUpdates } from "./updates";
-import { liveStatus, mbps, onLiveEvent, startLive, stopLive, type LiveEvent, type Whip } from "./live";
+import { liveStatus, mbps, onLiveEvent, setLiveMic, startLive, stopLive, type LiveEvent, type MicState, type Whip } from "./live";
 import { inShell, openExternal } from "./native";
 import { NewRoomSheet, RoomMenu, ServerUsage } from "./OwnerTools";
 import { Sheet } from "./Sheet";
@@ -63,15 +63,26 @@ export function App() {
   // Measured upload while live (all video layers plus audio), 0 until the first stats.
   const [upload, setUpload] = useState(0);
   const [liveError, setLiveError] = useState("");
+  const [mic, setMic] = useState<MicState>("off");
+  const [micError, setMicError] = useState("");
+  const [modifying, setModifying] = useState(false);
   const updates = useUpdates();
   const requestWhip = useRef<(() => Promise<Whip>) | null>(null);
   useEffect(
     () =>
       onLiveEvent((event) => {
+        if (event.state === "mic") {
+          setMic(event.mic);
+          if (event.error) setMicError(event.error);
+          return;
+        }
         if (event.state === "stopped") {
           setLive(null);
           if (event.error) setLiveError(event.error);
           setUpload(0);
+          setMic("off");
+          setMicError("");
+          setModifying(false);
           return;
         }
         if (event.state === "stats") {
@@ -85,13 +96,24 @@ export function App() {
   );
   useEffect(() => {
     liveStatus()
-      .then((target) => target && setLive((l) => l ?? { ...target, event: { state: "live" } }))
+      .then((status) => {
+        if (!status) return;
+        setLive((l) => l ?? { ...status.target, event: { state: "live" } });
+        setMic(status.mic);
+      })
       .catch(() => {});
   }, []);
   async function stopStreaming() {
     setLive(null);
     setUpload(0);
+    setMic("off");
+    setMicError("");
+    setModifying(false);
     await stopLive().catch((e) => setLiveError(String(e)));
+  }
+  function toggleMic() {
+    setMicError("");
+    setLiveMic(mic === "off").catch((e) => setMicError(String(e)));
   }
   const [editingServer, setEditingServer] = useState(false);
   const [makingRoom, setMakingRoom] = useState(false);
@@ -151,6 +173,9 @@ export function App() {
   const hidden = collapsed && !!room;
   const menuRoom = server?.rooms.find((r) => r.id === menu?.room) ?? null;
   const liveElsewhere = servers.some((s) => s.rooms.some((r) => r !== room && isLive(peeks[key(s.origin, r)])));
+  // Stays with the shell, not the room frame: it has to work from any room, and the room page is
+  // remote content that must never be able to switch a mic on.
+  const plate = live && <LivePlate room={live.room} mic={mic} floating={hidden} onMic={toggleMic} onModify={() => setModifying(true)} />;
 
   return (
     <div className={hidden ? "shell collapsed" : "shell"}>
@@ -219,6 +244,7 @@ export function App() {
           <p className="muted small rooms-empty">No servers yet.</p>
         )}
 
+        {!hidden && plate}
         <footer className="me">
           <div className="me-name">
             <span className="wordmark">stream</span>
@@ -241,6 +267,7 @@ export function App() {
       </aside>
 
       <main className="stage">
+        {hidden && plate}
         {server && room ? (
           <RoomFrame
             key={key(server.origin, room)}
@@ -328,21 +355,33 @@ export function App() {
         <GoLiveSheet
           roomName={room.id}
           onClose={() => setGoLive(false)}
-          onStart={async (source, audio, settings, sourceHeight, layers) => {
+          onStart={async (choices) => {
             const ask = requestWhip.current;
             if (!ask) throw new Error("The room is still loading");
             const whip = await ask();
             setLiveError("");
+            setMic("off");
+            setMicError("");
             setLive({ origin: server.origin, room: room.id, event: { state: "connecting" } });
             try {
-              await startLive(whip, source, audio, settings, sourceHeight, layers, { origin: server.origin, room: room.id });
+              await startLive(whip, { origin: server.origin, room: room.id }, choices);
             } catch (e) {
               setLive(null);
               throw e;
             }
+            // Going live over a running stream: that stream's "stopped" event cleared this, and a
+            // mic can already be open in the new one, so the plate has to be back.
+            setLive((l) => l ?? { origin: server.origin, room: room.id, event: { state: "connecting" } });
             setGoLive(false);
           }}
         />
+      )}
+      {modifying && live && <ModifySheet room={live.room} onClose={() => setModifying(false)} />}
+      {micError && (
+        <div className="live-error" role="alert">
+          <span>Microphone off. {micError}</span>
+          <button type="button" className="quiet" onClick={() => setMicError("")}>Dismiss</button>
+        </div>
       )}
       {liveError && (
         <div className="live-error" role="alert">
@@ -387,6 +426,25 @@ function RoomStatus({ peek }: { peek: Peek | null | undefined }) {
       {peek.live > 0 && <span className="live-pill">Live</span>}
       {peek.people > 0 && <span className="muted">{peek.people}</span>}
     </span>
+  );
+}
+
+function LivePlate(props: { room: string; mic: MicState; floating: boolean; onMic: () => void; onModify: () => void }) {
+  const label = props.mic === "on" ? "Mic on" : props.mic === "opening" ? "Mic opening…" : "Mic off";
+  return (
+    <div className={props.floating ? "plate floating" : "plate"} role="group" aria-label={`Live in #${props.room}`}>
+      <button
+        type="button"
+        className={`plate-key ${props.mic}`}
+        aria-pressed={props.mic !== "off"}
+        title={props.mic === "off" ? "Viewers can't hear your microphone" : "Viewers can hear your microphone"}
+        onClick={props.onMic}
+      >
+        <span className="lamp" aria-hidden="true" />
+        {label}
+      </button>
+      <button type="button" className="plate-key" title={`Modify stream in #${props.room}`} onClick={props.onModify}>Modify</button>
+    </div>
   );
 }
 

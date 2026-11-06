@@ -16,22 +16,25 @@
 //!
 //! The encoded size is fixed per encoder. When the source is resized, the new picture is fitted
 //! (letterboxed) into the old size at once, and the encoder is rebuilt at the new size once the
-//! size has held still for [`RESIZE_SETTLE`].
+//! size has held still for [`RESIZE_SETTLE`], with a bitrate to match the new size. A
+//! [`VideoCommand`] changing the settings takes the same rebuild, and falls back to the old
+//! settings when the encoder won't take the new ones.
 
-use super::{Clock, EncodedVideo, KeyframeRequests, Source, Stage, VideoSettings, VideoTx};
+use super::{layer_kbps, Clock, EncodedVideo, KeyframeRequests, Source, Stage, VideoCommand, VideoCommands, VideoSettings, VideoTx};
 #[cfg(windows)]
-use super::{bitrate_kbps, layer_fps, layer_size};
+use super::{layer_fps, layer_size};
 
 /// Starts capturing and encoding, one encoder per simulcast layer. Encoded frames go to `tx`; an
 /// IDR frame is produced on the requested layer (or all) as soon as possible after each message on
-/// `keyframes`, and at least every 2 seconds regardless.
+/// `keyframes`, and at least every 2 seconds regardless. `commands` changes the settings while it
+/// runs; dropping its sender just means no more changes.
 /// Errors before the thread starts (bad source, no encoder) are returned here; later failures
 /// end the stage and drop `tx`, which the sender sees as the stream ending.
-pub fn start(source: Source, settings: VideoSettings, clock: Clock, tx: VideoTx, keyframes: KeyframeRequests) -> Result<Stage, String> {
-    if settings.fps == 0 || settings.bitrate_kbps == 0 {
-        return Err("video settings need a frame rate and a bitrate".into());
+pub fn start(source: Source, settings: VideoSettings, clock: Clock, tx: VideoTx, keyframes: KeyframeRequests, commands: VideoCommands) -> Result<Stage, String> {
+    if settings.fps == 0 {
+        return Err("video settings need a frame rate".into());
     }
-    imp::start(source, settings, clock, tx, keyframes)
+    imp::start(source, settings, clock, tx, keyframes, commands)
 }
 
 /// H.264 encoders top out at 4096 on either side.
@@ -43,9 +46,53 @@ const RESIZE_SETTLE: std::time::Duration = std::time::Duration::from_millis(500)
 /// Longest gap between IDR frames.
 #[cfg_attr(not(windows), allow(dead_code))]
 const IDR_INTERVAL_US: u64 = 2_000_000;
+/// How long rebuilt encoders get to produce a keyframe before a settings change counts as
+/// accepted. Some drivers only fail once frames arrive.
+#[cfg_attr(not(windows), allow(dead_code))]
+const TRIAL: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Frame pacing for a frame rate, in microseconds.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Pacing {
+    interval: u64,
+    /// A fresh frame may go this much before its slot.
+    early: u64,
+    /// Wait this long past a slot for a fresh frame before repeating.
+    grace: u64,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+impl Pacing {
+    fn new(fps: u32) -> Pacing {
+        let interval = 1_000_000 / fps.max(1) as u64;
+        Pacing { interval, early: interval / 4, grace: interval / 2 }
+    }
+}
+
+/// `asked` as a running stage can take it: the number of layers is set before going live, because
+/// the sender publishes that many from the start.
+pub(super) fn retarget(current: VideoSettings, asked: VideoSettings) -> VideoSettings {
+    // Nothing shows frames faster than this, and past it an encoder only repeats them.
+    VideoSettings { layers: current.layers, fps: asked.fps.clamp(1, 240), ..asked }
+}
+
+/// Whether going from `old` to `new` changes anything an encoder has fixed: size, frame rate or
+/// any layer's rate, for a source showing `content`.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn needs_rebuild(old: VideoSettings, new: VideoSettings, content: (u32, u32)) -> bool {
+    let before = output_size(content.0, content.1, old.height);
+    let after = output_size(content.0, content.1, new.height);
+    before != after || old.fps != new.fps || (0..old.layer_count()).any(|i| layer_kbps(&old, before, i) != layer_kbps(&new, after, i))
+}
 
 /// Encoded size for a source of `w`×`h`: `target_h` tall (0, or taller than the source, means the
 /// source height; never upscaled), the source's aspect ratio, even sides, within encoder limits.
+#[cfg(windows)]
+fn at_size(settings: VideoSettings, size: (u32, u32)) -> VideoSettings {
+    VideoSettings { bitrate_kbps: layer_kbps(&settings, size, 0), ..settings }
+}
+
 fn output_size(w: u32, h: u32, target_h: u32) -> (u32, u32) {
     let (w, h) = (w.max(1) as u64, h.max(1) as u64);
     let mut oh = if target_h == 0 { h } else { (target_h as u64).min(h) };
@@ -206,11 +253,11 @@ mod imp {
         move |e| format!("{what}: {}", e.message().trim_end().to_owned() + &format!(" ({:#010x})", e.code().0))
     }
 
-    pub fn start(source: Source, settings: VideoSettings, clock: Clock, tx: VideoTx, keyframes: KeyframeRequests) -> Result<Stage, String> {
+    pub fn start(source: Source, settings: VideoSettings, clock: Clock, tx: VideoTx, keyframes: KeyframeRequests, commands: VideoCommands) -> Result<Stage, String> {
         let (ready_tx, ready_rx) = mpsc::channel::<Result<String, String>>();
         let stage = Stage::spawn("live-video", move |stop| {
             let mut ready = Some(ready_tx);
-            if let Err(e) = unsafe { run(source, settings, clock, tx, keyframes, &stop, &mut ready) } {
+            if let Err(e) = unsafe { run(source, settings, clock, tx, keyframes, commands, &stop, &mut ready) } {
                 match ready.take() {
                     Some(ready) => {
                         let _ = ready.send(Err(e));
@@ -227,29 +274,33 @@ mod imp {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     unsafe fn run(
         source: Source,
         settings: VideoSettings,
         clock: Clock,
         tx: VideoTx,
         keyframes: KeyframeRequests,
+        commands: VideoCommands,
         stop: &AtomicBool,
         ready: &mut Option<mpsc::Sender<Result<String, String>>>,
     ) -> Result<(), String> {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
         MFStartup(MF_VERSION, MFSTARTUP_LITE).map_err(err("Media Foundation"))?;
         // Every COM object lives inside `pipeline`, so all are released before MFShutdown.
-        let result = pipeline(source, settings, clock, tx, keyframes, stop, ready);
+        let result = pipeline(source, settings, clock, tx, keyframes, commands, stop, ready);
         let _ = MFShutdown();
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     unsafe fn pipeline(
         source: Source,
-        settings: VideoSettings,
+        mut settings: VideoSettings,
         clock: Clock,
         tx: VideoTx,
         keyframes: KeyframeRequests,
+        commands: VideoCommands,
         stop: &AtomicBool,
         ready: &mut Option<mpsc::Sender<Result<String, String>>>,
     ) -> Result<(), String> {
@@ -282,7 +333,7 @@ mod imp {
                     continue;
                 }
             };
-            match Encoder::new(candidate.activate.clone(), &gpu, initial, settings, 0, clock, tx.clone(), wake_h) {
+            match Encoder::new(candidate.activate.clone(), &gpu, initial, at_size(settings, initial), 0, clock, tx.clone(), wake_h) {
                 Ok(encoder) => {
                     chosen = Some((candidate, gpu, encoder));
                     break;
@@ -304,10 +355,9 @@ mod imp {
             let _ = ready.send(Ok(candidate.name.clone()));
         }
 
-        let fps = settings.fps as u64;
-        let interval = 1_000_000 / fps;
-        let early = interval / 4; // a fresh frame may go this much before its slot
-        let grace = interval / 2; // wait this long past a slot for a fresh frame before repeating
+        let mut pace = Pacing::new(settings.fps);
+        // A settings change waiting to prove itself, with what to go back to.
+        let mut trial: Option<Trial> = None;
 
         let mut held: Option<Held> = None;
         let mut dirty = false; // `held` hasn't been sent yet
@@ -322,6 +372,24 @@ mod imp {
             }
             if capture.closed() {
                 break Ok(());
+            }
+            if let Some(current) = &trial {
+                let failure = layers.iter().filter_map(|l| l.encoder.as_ref()).find_map(|e| e.failure());
+                let proved = layers[0].encoder.as_ref().is_some_and(|e| e.shared.last_idr_us.load(Ordering::Relaxed) != 0);
+                if let Some(error) = failure {
+                    let Trial { previous, reply, .. } = trial.take().unwrap();
+                    settings = previous;
+                    pace = Pacing::new(settings.fps);
+                    pending_size = None;
+                    let content = content_of(&held, &capture);
+                    if let Err(e) = rebuild(&mut layers, &candidate, &gpu, output_size(content.0, content.1, settings.height), settings, clock, &tx, wake_h) {
+                        let _ = reply.send(Err(error));
+                        break Err(format!("going back to the old settings: {e}"));
+                    }
+                    let _ = reply.send(Err(error));
+                } else if proved || current.since.elapsed() >= TRIAL {
+                    let _ = trial.take().unwrap().reply.send(Ok(()));
+                }
             }
             let ended = layers.iter().filter_map(|l| l.encoder.as_ref()).find_map(|e| match e.failure() {
                 Some(error) => Some(Err(error)),
@@ -359,6 +427,63 @@ mod imp {
                     }
                 }
             }
+            // One change at a time: the next waits until this one has proved itself.
+            if trial.is_none() {
+                let command = commands.try_recv();
+                if let Ok(VideoCommand::Source { source, reply }) = &command {
+                    let next = capture_item(*source).and_then(|item| {
+                        let size = item.Size().map_err(err("capture item size"))?;
+                        Capture::new(item, &gpu, size, *source, wake_h)
+                    });
+                    match next {
+                        Ok(next) => {
+                            if let Some(old) = held.take() {
+                                let _ = old.frame.Close();
+                            }
+                            capture = next;
+                            dirty = false;
+                            pending_size = None;
+                            // Re-encodes at the new size on its first frame instead of waiting for a
+                            // resize to settle, and viewers get a clean start either way.
+                            sent_any = false;
+                            for layer in &mut layers {
+                                layer.want_key = true;
+                            }
+                            let _ = reply.send(Ok(()));
+                        }
+                        Err(e) => {
+                            let _ = reply.send(Err(e));
+                        }
+                    }
+                }
+                if let Ok(VideoCommand::Apply { settings: asked, reply }) = command {
+                    let asked = retarget(settings, asked);
+                    let content = content_of(&held, &capture);
+                    if asked.fps == 0 {
+                        let _ = reply.send(Err("video settings need a frame rate".into()));
+                    } else if !needs_rebuild(settings, asked, content) {
+                        settings = asked;
+                        let _ = reply.send(Ok(()));
+                    } else {
+                        pending_size = None;
+                        match rebuild(&mut layers, &candidate, &gpu, output_size(content.0, content.1, asked.height), asked, clock, &tx, wake_h) {
+                            Ok(()) => {
+                                trial = Some(Trial { previous: settings, reply, since: Instant::now() });
+                                settings = asked;
+                                pace = Pacing::new(settings.fps);
+                            }
+                            Err(error) => {
+                                if let Err(e) = rebuild(&mut layers, &candidate, &gpu, output_size(content.0, content.1, settings.height), settings, clock, &tx, wake_h) {
+                                    let _ = reply.send(Err(error));
+                                    break Err(format!("going back to the old settings: {e}"));
+                                }
+                                let _ = reply.send(Err(error));
+                            }
+                        }
+                    }
+                }
+            }
+            let Pacing { interval, early, grace } = pace;
 
             let mut blocked = false;
             if let Some(frame) = &held {
@@ -373,17 +498,8 @@ mod imp {
                         }
                     };
                     if settled || !sent_any {
-                        // All old encoders go first: drivers cap how many can run at once.
-                        for layer in &mut layers {
-                            layer.stop();
-                        }
-                        let encoder = match Encoder::new(candidate.activate.clone(), &gpu, wanted, settings, 0, clock, tx.clone(), wake_h) {
-                            Ok(encoder) => encoder,
-                            Err(e) => return Err(format!("restarting the encoder at {}x{}: {e}", wanted.0, wanted.1)),
-                        };
-                        layers[0].encoder = Some(encoder);
-                        for layer in &mut layers[1..] {
-                            layer.start_lower(&candidate, &gpu, wanted, settings, count, clock, &tx, wake_h);
+                        if let Err(e) = rebuild(&mut layers, &candidate, &gpu, wanted, settings, clock, &tx, wake_h) {
+                            return Err(format!("restarting the encoder at {}x{}: {e}", wanted.0, wanted.1));
                         }
                         pending_size = None;
                     }
@@ -450,6 +566,33 @@ mod imp {
         result
     }
 
+    struct Trial {
+        previous: VideoSettings,
+        reply: mpsc::SyncSender<Result<(), String>>,
+        since: Instant,
+    }
+
+    /// The size of what's being captured: the held frame, or before the first one, the pool.
+    fn content_of(held: &Option<Held>, capture: &Capture) -> (u32, u32) {
+        held.as_ref().map_or((capture.pool_size.Width as u32, capture.pool_size.Height as u32), |frame| frame.content)
+    }
+
+    /// Replaces every encoder with one for `settings` at a full size of `size`.
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn rebuild(layers: &mut [Layer], candidate: &Candidate, gpu: &Gpu, size: (u32, u32), settings: VideoSettings, clock: Clock, tx: &VideoTx, wake: Handle) -> Result<(), String> {
+        // All old encoders go first: drivers cap how many can run at once.
+        for layer in layers.iter_mut() {
+            layer.stop();
+            layer.set_fps(layer_fps(settings.fps, layer.index));
+        }
+        layers[0].encoder = Some(Encoder::new(candidate.activate.clone(), gpu, size, at_size(settings, size), 0, clock, tx.clone(), wake)?);
+        let count = settings.layer_count();
+        for layer in &mut layers[1..] {
+            layer.start_lower(candidate, gpu, size, settings, count, clock, tx, wake);
+        }
+        Ok(())
+    }
+
     /// One simulcast layer: the converter that scales into it, its encoder (rebuilt at each new
     /// source size) and its own keyframe and frame-rate bookkeeping.
     struct Layer {
@@ -468,12 +611,17 @@ mod imp {
 
     impl Layer {
         fn new(index: usize, fps: u32) -> Layer {
-            let interval = 1_000_000 / fps.max(1) as u64;
+            let interval = Pacing::new(fps).interval;
             Layer { index, fps, interval, converter: None, encoder: None, sent_any: false, want_key: false, last_forced: 0, next_due: 0 }
         }
 
         fn size(&self) -> Option<(u32, u32)> {
             self.encoder.as_ref().map(|e| e.size)
+        }
+
+        fn set_fps(&mut self, fps: u32) {
+            self.fps = fps;
+            self.interval = Pacing::new(fps).interval;
         }
 
         fn stop(&mut self) {
@@ -490,7 +638,7 @@ mod imp {
         unsafe fn start_lower(&mut self, candidate: &Candidate, gpu: &Gpu, full: (u32, u32), settings: VideoSettings, count: usize, clock: Clock, tx: &VideoTx, wake: Handle) {
             let size = layer_size(full, self.index, count);
             let size = (size.0.max(MIN_SIDE), size.1.max(MIN_SIDE));
-            let layer_settings = VideoSettings { fps: self.fps, bitrate_kbps: bitrate_kbps(size.1, self.fps).min(settings.bitrate_kbps), ..settings };
+            let layer_settings = VideoSettings { fps: self.fps, bitrate_kbps: layer_kbps(&settings, full, self.index), ..settings };
             let started = twin(candidate).and_then(|activate| Encoder::new(activate, gpu, size, layer_settings, self.index, clock, tx.clone(), wake));
             match started {
                 Ok(encoder) => self.encoder = Some(encoder),
@@ -1223,7 +1371,7 @@ mod imp {
 #[cfg(not(windows))]
 mod imp {
     use super::*;
-    pub fn start(_: Source, _: VideoSettings, _: Clock, _: VideoTx, _: KeyframeRequests) -> Result<Stage, String> {
+    pub fn start(_: Source, _: VideoSettings, _: Clock, _: VideoTx, _: KeyframeRequests, _: VideoCommands) -> Result<Stage, String> {
         Err("native capture is only implemented on Windows".into())
     }
 }
@@ -1240,6 +1388,27 @@ mod tests {
         assert_eq!(output_size(1001, 601, 0), (1000, 600));
         assert_eq!(output_size(7680, 2160, 2160), (4096, 1152));
         assert_eq!(output_size(10, 10, 0), (64, 64));
+    }
+
+    #[test]
+    fn pacing_follows_the_frame_rate() {
+        assert_eq!(Pacing::new(60), Pacing { interval: 16_666, early: 4_166, grace: 8_333 });
+        assert_eq!(Pacing::new(30), Pacing { interval: 33_333, early: 8_333, grace: 16_666 });
+        assert_eq!(Pacing::new(144).interval, 6_944);
+    }
+
+    #[test]
+    fn settings_change_keeps_layers_and_rebuilds_only_when_needed() {
+        let base = VideoSettings { height: 1080, fps: 60, bitrate_kbps: 0, total_kbps: 0, layers: 3 };
+        assert_eq!(retarget(base, VideoSettings { layers: 1, fps: 30, ..base }), VideoSettings { fps: 30, ..base });
+
+        let screen = (2560, 1440);
+        assert!(!needs_rebuild(base, base, screen));
+        assert!(needs_rebuild(base, VideoSettings { height: 720, ..base }, screen));
+        assert!(needs_rebuild(base, VideoSettings { fps: 30, ..base }, screen));
+        assert!(needs_rebuild(base, VideoSettings { total_kbps: 20_000, ..base }, screen));
+        // The source is smaller than either height, so the encoded size and rate don't move.
+        assert!(!needs_rebuild(base, VideoSettings { height: 1440, ..base }, (1280, 720)));
     }
 
     #[test]

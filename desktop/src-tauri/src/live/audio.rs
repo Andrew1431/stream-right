@@ -1,7 +1,13 @@
 //! Audio stage: WASAPI process loopback (Windows 10 2004+). [`AudioMode::App`] captures one
 //! process tree; [`AudioMode::AllExceptVoice`] captures every process with an audio session
-//! except [`VOICE_APPS`] and stream's own tree, mixing them and picking up apps that start
-//! playing later. Output is 48 kHz stereo Opus in 20 ms packets.
+//! except [`VOICE_APPS`], stream's own tree and what the user left out, mixing them and picking up
+//! apps that start playing later; [`AudioMode::OnlyApps`] captures just the apps the user listed.
+//! [`AudioMode::Off`] captures nothing. Output is 48 kHz stereo Opus in 20 ms packets in every
+//! mode: the SFU only knows a track once packets flow, and viewers pulling a silent-but-unsent
+//! track get "track not found".
+//!
+//! The microphone is separate from all of that: an ordinary capture stream that only exists while
+//! [`MicControl`](super::MicControl) says so, summed in from a bus of its own at the encode step.
 //!
 //! Timing: every captured packet carries the QPC time WASAPI mixed it at, which places it on the
 //! session timeline (in 48 kHz samples). Each source is written into a shared mix buffer at that
@@ -13,51 +19,52 @@
 //! Opus comes from `unsafe-libopus`, libopus 1.3 transpiled to Rust: it builds without CMake or a
 //! C compiler (the libopus `-sys` crates all need CMake, which isn't on PATH here).
 
-use super::{AudioMode, AudioTx, Clock, EncodedAudio, Stage};
-use std::sync::atomic::Ordering;
-use std::time::Duration;
+use super::{AudioControls, AudioMode, AudioTx, Clock, Stage};
 
-/// Starts capturing and encoding. `AudioMode::Off` returns a stage that sends nothing.
-/// Silence is still encoded (not skipped) while a captured app is quiet, so timestamps stay
-/// continuous for the receiver.
-pub fn start(mode: AudioMode, clock: Clock, tx: AudioTx) -> Result<Stage, String> {
-    if let AudioMode::Off = mode {
-        // Send silence rather than nothing: the SFU only knows a track once packets flow, and
-        // viewers pulling a silent-but-unsent track get "track not found".
-        return Stage::spawn("audio-off", move |stop| {
-            // A 20 ms fullband CELT stereo frame of digital silence.
-            const SILENCE: [u8; 3] = [0xFC, 0xFF, 0xFE];
-            let mut next = clock.now_us();
-            while !stop.load(Ordering::Relaxed) {
-                if tx.send(EncodedAudio { data: SILENCE.to_vec(), pts_us: next }).is_err() {
-                    return;
-                }
-                next += 20_000;
-                let now = clock.now_us();
-                if next > now {
-                    std::thread::sleep(Duration::from_micros(next - now));
-                }
-            }
-        })
-        .map_err(|e| e.to_string());
-    }
+/// Starts capturing and encoding. Silence is still encoded (not skipped) while nothing is playing,
+/// so timestamps stay continuous for the receiver. `controls` changes the sound and switches the
+/// mic while it runs.
+pub fn start(mode: AudioMode, clock: Clock, tx: AudioTx, controls: AudioControls) -> Result<Stage, String> {
     #[cfg(windows)]
     {
-        imp::start(mode, clock, tx)
+        imp::start(mode, clock, tx, controls)
     }
     #[cfg(not(windows))]
     {
-        let _ = (clock, tx);
+        let _ = (mode, clock, tx, controls);
         Err("native audio capture is only implemented on Windows".into())
+    }
+}
+
+/// An app the user can choose in the sound picker. Keyed by lowercase exe, because pids change.
+#[derive(Debug, PartialEq, serde::Serialize)]
+pub struct AudioApp {
+    pub exe: String,
+    pub name: String,
+    pub playing: bool,
+}
+
+/// Apps with an audio session, merged with windowed apps that have none yet. `windows` is
+/// (pid, title).
+pub fn audio_apps(windows: Vec<(u32, String)>) -> Result<Vec<AudioApp>, String> {
+    #[cfg(windows)]
+    {
+        imp::audio_apps(windows)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = windows;
+        Ok(Vec::new())
     }
 }
 
 #[cfg(windows)]
 mod imp {
-    use super::super::{AudioMode, AudioTx, Clock, EncodedAudio, Stage, VOICE_APPS};
-    use std::collections::{HashMap, HashSet, VecDeque};
+    use super::super::{AudioControls, AudioMode, AudioTx, Clock, EncodedAudio, MicControl, MicState, Stage, VOICE_APPS};
+    use super::AudioApp;
+    use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::mpsc::{self, SyncSender, TrySendError};
+    use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
     use unsafe_libopus as unsafe_opus;
@@ -84,12 +91,14 @@ mod imp {
     const JUMP: i64 = RATE / 100;
     const RESCAN: Duration = Duration::from_secs(1);
     const POLL: Duration = Duration::from_millis(5);
+    /// A Bluetooth headset can take a few seconds to switch profile; past this it isn't coming.
+    const MIC_OPEN_LIMIT: Duration = Duration::from_secs(15);
     const FLAG_DISCONTINUITY: u32 = AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32;
     const FLAG_SILENT: u32 = AUDCLNT_BUFFERFLAGS_SILENT.0 as u32;
 
-    pub fn start(mode: AudioMode, clock: Clock, tx: AudioTx) -> Result<Stage, String> {
+    pub fn start(mode: AudioMode, clock: Clock, tx: AudioTx, controls: AudioControls) -> Result<Stage, String> {
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-        let stage = Stage::spawn("audio", move |stop| run(mode, clock, tx, &stop, ready_tx)).map_err(|e| e.to_string())?;
+        let stage = Stage::spawn("audio", move |stop| run(mode, clock, tx, controls, &stop, ready_tx)).map_err(|e| e.to_string())?;
         match ready_rx.recv() {
             Ok(Ok(())) => Ok(stage),
             Ok(Err(e)) => Err(e),
@@ -97,12 +106,12 @@ mod imp {
         }
     }
 
-    fn run(mode: AudioMode, clock: Clock, tx: AudioTx, stop: &AtomicBool, ready: SyncSender<Result<(), String>>) {
+    fn run(mode: AudioMode, clock: Clock, tx: AudioTx, controls: AudioControls, stop: &AtomicBool, ready: SyncSender<Result<(), String>>) {
         let _com = match Com::init() {
             Ok(com) => com,
             Err(e) => return drop(ready.send(Err(e))),
         };
-        let mut engine = match Engine::new(mode, clock) {
+        let mut engine = match Engine::new(mode, clock, controls) {
             Ok(engine) => engine,
             Err(e) => return drop(ready.send(Err(e))),
         };
@@ -111,6 +120,9 @@ mod imp {
             eprintln!("[audio] stopped: {e}");
         }
         engine.report();
+        let mic = engine.mic.control.clone();
+        drop(engine);
+        mic.report(MicState::Off);
     }
 
     struct Com;
@@ -132,6 +144,10 @@ mod imp {
         captures: Vec<Capture>,
         sessions: Option<Sessions>,
         mixer: Mixer,
+        // Kept out of `captures` so a rescan can't close it, and out of `mixer` because what's
+        // summed there can't be taken back when the mic goes off.
+        mic: Mic,
+        modes: Receiver<AudioMode>,
         encoder: Encoder,
         failed: HashMap<u32, Instant>,
         last_scan: Instant,
@@ -149,15 +165,21 @@ mod imp {
     }
 
     impl Engine {
-        fn new(mode: AudioMode, clock: Clock) -> Result<Self, String> {
-            check_windows_version()?;
+        fn new(mode: AudioMode, clock: Clock, controls: AudioControls) -> Result<Self, String> {
+            // Sound off captures no apps, so it doesn't need process loopback.
+            if mode != AudioMode::Off {
+                check_windows_version()?;
+            }
             let now = samples(clock.now_us() as i64);
+            let base = now.div_euclid(FRAME as i64) * FRAME as i64 + FRAME as i64;
             let mut engine = Engine {
                 clock,
-                mode,
+                mode: mode.clone(),
                 captures: Vec::new(),
                 sessions: None,
-                mixer: Mixer::new(now.div_euclid(FRAME as i64) * FRAME as i64 + FRAME as i64),
+                mixer: Mixer::new(base),
+                mic: Mic { control: controls.mic, device: MicDevice::Closed, bus: Mixer::new(base) },
+                modes: controls.modes,
                 encoder: Encoder::new()?,
                 failed: HashMap::new(),
                 last_scan: Instant::now(),
@@ -171,7 +193,7 @@ mod imp {
                     eprintln!("[audio] capturing: {name} ({pid})");
                     engine.captures.push(Capture::open(pid, name)?);
                 }
-                AudioMode::AllExceptVoice => {
+                AudioMode::AllExceptVoice { .. } | AudioMode::OnlyApps { .. } => {
                     engine.sessions = Some(Sessions::new()?);
                     engine.rescan();
                 }
@@ -184,6 +206,9 @@ mod imp {
             let mut pcm = vec![0f32; FRAME * 2];
             while !stop.load(Ordering::Relaxed) {
                 let now = samples(self.clock.now_us() as i64);
+                // First thing each pass, so a mic switched off while a rescan held this thread up
+                // is closed and cleared before anything else gets encoded.
+                self.mic.step(&self.clock, now, &mut self.stats);
                 let mut i = 0;
                 while i < self.captures.len() {
                     match self.captures[i].drain(&self.clock, &mut self.mixer, now, &mut self.stats) {
@@ -200,10 +225,11 @@ mod imp {
                     let target = (now - LATENCY).div_euclid(FRAME as i64) * FRAME as i64;
                     self.stats.skipped += (target - self.mixer.base) as u64;
                     self.mixer.skip_to(target);
+                    self.mic.bus.skip_to(target);
                 }
                 while now - LATENCY >= self.mixer.base + FRAME as i64 {
                     let pts_us = (self.mixer.base * 1_000_000 / RATE) as u64;
-                    self.mixer.take(&mut pcm);
+                    self.mixer.take(&mut self.mic.bus, &mut pcm);
                     let data = self.encoder.encode(&pcm)?;
                     match tx.try_send(EncodedAudio { data, pts_us }) {
                         Ok(()) => {}
@@ -224,6 +250,9 @@ mod imp {
         /// Works out which process trees to capture and opens or closes captures to match.
         fn rescan(&mut self) {
             self.last_scan = Instant::now();
+            while let Ok(mode) = self.modes.try_recv() {
+                self.set_mode(mode);
+            }
             let table = processes();
             let plan = match (&self.mode, &mut self.sessions) {
                 (AudioMode::App { pid }, _) => {
@@ -233,7 +262,8 @@ mod imp {
                         return;
                     }
                 }
-                (AudioMode::AllExceptVoice, Some(sessions)) => plan(&table, &sessions.pids(), std::process::id()),
+                (AudioMode::AllExceptVoice { except }, Some(sessions)) => plan(&table, &sessions.pids(), std::process::id(), &Rules::except(except)),
+                (AudioMode::OnlyApps { only }, Some(sessions)) => plan(&table, &sessions.pids(), std::process::id(), &Rules::only(only)),
                 _ => return,
             };
 
@@ -263,6 +293,33 @@ mod imp {
                 eprintln!("[audio] {text}");
                 self.last_plan = text;
             }
+        }
+
+        /// Switches to new sound choices. `rescan`, which called this, opens what they need.
+        fn set_mode(&mut self, mode: AudioMode) {
+            match &mode {
+                AudioMode::App { pid } => {
+                    self.captures.retain(|c| c.pid == *pid);
+                    self.sessions = None;
+                }
+                AudioMode::Off => {
+                    self.captures.clear();
+                    self.sessions = None;
+                }
+                AudioMode::AllExceptVoice { .. } | AudioMode::OnlyApps { .. } => {
+                    if self.sessions.is_none() {
+                        match Sessions::new() {
+                            Ok(sessions) => self.sessions = Some(sessions),
+                            Err(e) => {
+                                eprintln!("[audio] keeping the old sound choices: {e}");
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+            self.mode = mode;
+            self.failed.clear();
         }
 
         fn report(&self) {
@@ -331,6 +388,8 @@ mod imp {
         next: Option<i64>,
         scratch: Vec<[f32; 2]>,
         stretched: Vec<[f32; 2]>,
+        /// Packets, packets Windows flagged silent, and the loudest sample: tells a silent mic from a broken path.
+        heard: (u64, u64, f32),
     }
 
     #[implement(IActivateAudioInterfaceCompletionHandler)]
@@ -346,8 +405,22 @@ mod imp {
     impl Capture {
         fn open(pid: u32, name: String) -> Result<Self, String> {
             let client = activate(pid).map_err(|e| format!("process loopback activation failed ({e}); it needs Windows 10 version 2004 or later"))?;
-            let mut float = true;
             let flags = AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
+            Self::begin(client, flags, pid, name).map_err(|e| format!("couldn't open the capture stream: {e}"))
+        }
+
+        /// The default microphone, on the console role: the device Windows' sound settings show
+        /// as the input. The communications role can be a different device, and streams on it
+        /// are what Windows ducks other sounds for.
+        fn open_mic() -> Result<Self, windows::core::Error> {
+            let enumerator: IMMDeviceEnumerator = unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }?;
+            let device = unsafe { enumerator.GetDefaultAudioEndpoint(eCapture, eConsole) }?;
+            let client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None) }?;
+            Self::begin(client, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, 0, "microphone".into())
+        }
+
+        fn begin(client: IAudioClient, flags: u32, pid: u32, name: String) -> Result<Self, windows::core::Error> {
+            let mut float = true;
             let init = |float: bool| {
                 let bits = if float { 32 } else { 16 };
                 let format = WAVEFORMATEX {
@@ -364,11 +437,11 @@ mod imp {
             };
             if init(true).is_err() {
                 float = false;
-                init(false).map_err(|e| format!("couldn't open the capture stream: {e}"))?;
+                init(false)?;
             }
-            let capture: IAudioCaptureClient = unsafe { client.GetService() }.map_err(|e| e.to_string())?;
-            unsafe { client.Start() }.map_err(|e| e.to_string())?;
-            Ok(Capture { pid, name, client, capture, float, next: None, scratch: Vec::new(), stretched: Vec::new() })
+            let capture: IAudioCaptureClient = unsafe { client.GetService() }?;
+            unsafe { client.Start() }?;
+            Ok(Capture { pid, name, client, capture, float, next: None, scratch: Vec::new(), stretched: Vec::new(), heard: (0, 0, 0.0) })
         }
 
         /// Moves every waiting packet into the mix.
@@ -395,6 +468,9 @@ mod imp {
                 if n == 0 {
                     continue;
                 }
+                self.heard.0 += 1;
+                self.heard.1 += u64::from(flags & FLAG_SILENT != 0);
+                self.heard.2 = self.scratch.iter().fold(self.heard.2, |peak, s| peak.max(s[0].abs()).max(s[1].abs()));
 
                 let at = samples(clock.hns_to_us(qpc as i64) as i64);
                 let (pos, len) = place(&mut self.next, at, n, flags & FLAG_DISCONTINUITY != 0);
@@ -481,6 +557,113 @@ mod imp {
         }));
     }
 
+    // ---- Microphone ----------------------------------------------------------------------------
+
+    /// Opening can take seconds (Bluetooth), so it happens off the engine loop.
+    struct OpenedMic(Capture);
+    // Core Audio objects are free-threaded within the MTA, and both the helper thread and the
+    // engine thread are in it. GetBuffer and ReleaseBuffer, which must stay on one thread, only
+    // ever run on the engine thread.
+    unsafe impl Send for OpenedMic {}
+
+    enum MicDevice {
+        Closed,
+        Opening(Receiver<Result<OpenedMic, String>>, Instant),
+        Open(Capture),
+    }
+
+    struct Mic {
+        control: Arc<MicControl>,
+        device: MicDevice,
+        bus: Mixer,
+    }
+
+    impl Mic {
+        /// Follows the switch, then moves what the mic has captured onto the bus.
+        fn step(&mut self, clock: &Clock, now: i64, stats: &mut Stats) {
+            let wanted = self.control.wanted();
+            match &mut self.device {
+                MicDevice::Closed => {
+                    if wanted {
+                        match open_mic_on_helper() {
+                            Ok(opening) => {
+                                self.device = MicDevice::Opening(opening, Instant::now());
+                                self.control.report(MicState::Opening);
+                            }
+                            Err(e) => self.control.fail(format!("Couldn't open it ({e}).")),
+                        }
+                    }
+                }
+                MicDevice::Opening(opening, since) => {
+                    let since = *since;
+                    match opening.try_recv() {
+                        // Switched off while it was opening: nothing was read from it.
+                        Ok(_) if !wanted => {
+                            self.device = MicDevice::Closed;
+                            self.control.report(MicState::Off);
+                        }
+                        Ok(Ok(mic)) => {
+                            self.device = MicDevice::Open(mic.0);
+                            self.control.report(MicState::On);
+                        }
+                        Ok(Err(e)) => {
+                            self.device = MicDevice::Closed;
+                            self.control.fail(e);
+                        }
+                        Err(TryRecvError::Disconnected) => {
+                            self.device = MicDevice::Closed;
+                            self.control.fail("Couldn't open it.".into());
+                        }
+                        Err(TryRecvError::Empty) if wanted && since.elapsed() >= MIC_OPEN_LIMIT => {
+                            // Dropping the receiver makes the helper close it if it ever opens.
+                            self.device = MicDevice::Closed;
+                            self.control.fail("It took too long to open.".into());
+                        }
+                        Err(TryRecvError::Empty) => self.control.report(if wanted { MicState::Opening } else { MicState::Off }),
+                    }
+                }
+                MicDevice::Open(capture) => {
+                    if !wanted {
+                        eprintln!("[audio] mic closed: {} packets, {} flagged silent, peak {:.4}", capture.heard.0, capture.heard.1, capture.heard.2);
+                        self.bus.clear();
+                        self.device = MicDevice::Closed;
+                        self.control.report(MicState::Off);
+                    } else if let Err(e) = capture.drain(clock, &mut self.bus, now, stats) {
+                        eprintln!("[audio] lost the microphone: {e}");
+                        self.bus.clear();
+                        self.device = MicDevice::Closed;
+                        self.control.fail("It was unplugged or stopped responding.".into());
+                    }
+                }
+            }
+        }
+    }
+
+    fn open_mic_on_helper() -> std::io::Result<Receiver<Result<OpenedMic, String>>> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        std::thread::Builder::new().name("audio-mic-open".into()).spawn(move || {
+            let com = Com::init();
+            let opened = match &com {
+                Ok(_) => Capture::open_mic().map(OpenedMic).map_err(|e| mic_error(&e)),
+                Err(e) => Err(e.clone()),
+            };
+            // If the engine has given up the send fails and the device closes right here, still
+            // inside this thread's COM init.
+            let _ = tx.send(opened);
+            drop(com);
+        })?;
+        Ok(rx)
+    }
+
+    fn mic_error(e: &windows::core::Error) -> String {
+        match e.code().0 as u32 {
+            0x8007_0005 => "Windows is blocking microphone access. You can allow it in Settings, under Privacy and security, Microphone.".into(),
+            0x8007_0490 => "Windows has no microphone set up.".into(),
+            0x8889_000A => "Another app has the microphone to itself.".into(),
+            _ => format!("Couldn't open it ({e})."),
+        }
+    }
+
     // ---- Mix and encode ------------------------------------------------------------------------
 
     /// Stereo samples on the session timeline from `base` on, summed across sources.
@@ -517,14 +700,22 @@ mod imp {
             late
         }
 
-        /// Takes the next 20 ms as interleaved stereo, silence where nothing played.
-        fn take(&mut self, pcm: &mut [f32]) {
+        /// Takes the next 20 ms of this and `bus`, which share a timeline, as interleaved stereo:
+        /// summed, then clamped, silence where nothing played.
+        fn take(&mut self, bus: &mut Mixer, pcm: &mut [f32]) {
             for out in pcm.as_chunks_mut::<2>().0 {
                 let s = self.buf.pop_front().unwrap_or([0.0; 2]);
-                out[0] = s[0].clamp(-1.0, 1.0);
-                out[1] = s[1].clamp(-1.0, 1.0);
+                let b = bus.buf.pop_front().unwrap_or([0.0; 2]);
+                out[0] = (s[0] + b[0]).clamp(-1.0, 1.0);
+                out[1] = (s[1] + b[1]).clamp(-1.0, 1.0);
             }
             self.base += FRAME as i64;
+            bus.base += FRAME as i64;
+        }
+
+        /// Forgets everything waiting, staying on the timeline.
+        fn clear(&mut self) {
+            self.buf.clear();
         }
 
         fn skip_to(&mut self, base: i64) {
@@ -617,10 +808,15 @@ mod imp {
             }
         }
 
-        /// Processes that have a live (not expired) audio session on any output device.
         fn pids(&mut self) -> HashSet<u32> {
+            self.playing().into_keys().collect()
+        }
+
+        /// Processes that have a live (not expired) audio session on any output device, and
+        /// whether any of their sessions is playing right now.
+        fn playing(&mut self) -> HashMap<u32, bool> {
             self.refresh_devices();
-            let mut pids = HashSet::new();
+            let mut pids = HashMap::new();
             for manager in self.managers.values() {
                 let Ok(list) = (unsafe { manager.GetSessionEnumerator() }) else { continue };
                 let count = unsafe { list.GetCount() }.unwrap_or(0);
@@ -630,12 +826,13 @@ mod imp {
                     if unsafe { control.IsSystemSoundsSession() } == S_OK {
                         continue;
                     }
-                    if unsafe { control.GetState() }.is_ok_and(|s| s == AudioSessionStateExpired) {
+                    let state = unsafe { control.GetState() };
+                    if state.as_ref().is_ok_and(|s| *s == AudioSessionStateExpired) {
                         continue;
                     }
                     if let Ok(pid) = unsafe { control.GetProcessId() } {
                         if pid != 0 {
-                            pids.insert(pid);
+                            *pids.entry(pid).or_insert(false) |= state.is_ok_and(|s| s == AudioSessionStateActive);
                         }
                     }
                 }
@@ -698,12 +895,48 @@ mod imp {
         left_out: Vec<(u32, &'static str)>,
     }
 
+    /// What the user chose on top of what always stays out, as lowercase exe names.
+    enum Rules {
+        Except(HashSet<String>),
+        Only(HashSet<String>),
+    }
+
+    fn lowercase(names: &[String]) -> HashSet<String> {
+        names.iter().map(|n| n.to_lowercase()).collect()
+    }
+
+    impl Rules {
+        fn except(names: &[String]) -> Self {
+            Rules::Except(lowercase(names))
+        }
+
+        fn only(names: &[String]) -> Self {
+            Rules::Only(lowercase(names))
+        }
+
+        fn allows(&self, exe: &str) -> bool {
+            match self {
+                Rules::Except(names) => !names.contains(&exe.to_lowercase()),
+                Rules::Only(names) => names.contains(&exe.to_lowercase()),
+            }
+        }
+    }
+
+    fn is_voice(table: &HashMap<u32, Proc>, pid: u32) -> bool {
+        table.get(&pid).is_some_and(|p| VOICE_APPS.iter().any(|v| v.eq_ignore_ascii_case(&p.name)))
+    }
+
     /// Process loopback captures a whole process tree, so: leave out voice apps and stream's own
     /// tree (which includes its WebView2 processes, children of the app), leave out any process
     /// with one of those beneath it (capturing it would capture them too), and capture only the
     /// topmost of what's left so no tree is heard twice.
-    fn plan(table: &HashMap<u32, Proc>, sessions: &HashSet<u32>, own_pid: u32) -> Plan {
-        let is_voice = |pid: u32| table.get(&pid).is_some_and(|p| VOICE_APPS.iter().any(|v| v.eq_ignore_ascii_case(&p.name)));
+    ///
+    /// `rules` work on each process's own exe, never its descendants: leaving out steam.exe must
+    /// not silence every game it started. Only the tree rule carries over: a process with
+    /// something the rules keep out beneath it can't be captured either, though what's beneath a
+    /// left out process still can.
+    fn plan(table: &HashMap<u32, Proc>, sessions: &HashSet<u32>, own_pid: u32, rules: &Rules) -> Plan {
+        let is_voice = |pid: u32| is_voice(table, pid);
         // Every running process that must not be heard, with why.
         let mut excluded: HashMap<u32, &'static str> = HashMap::new();
         for &pid in table.keys() {
@@ -719,6 +952,19 @@ mod imp {
         for &pid in excluded.keys() {
             covers_excluded.extend(lineage(table, pid).into_iter().skip(1));
         }
+        // Processes with something the rules keep out running under them. Anything left out by
+        // name counts even while silent, like voice apps. For a list of apps to include, only
+        // what has a session counts: every helper process (crash handlers, consoles) isn't on the
+        // list, and counting them would silence the very app the user ticked.
+        let disallowed = |pid: &u32| table.get(pid).is_some_and(|p| !rules.allows(&p.name));
+        let kept_out: Vec<u32> = match rules {
+            Rules::Except(_) => table.keys().copied().filter(|pid| disallowed(pid)).collect(),
+            Rules::Only(_) => sessions.iter().copied().filter(|pid| disallowed(pid)).collect(),
+        };
+        let mut covers_kept_out = HashSet::new();
+        for pid in kept_out {
+            covers_kept_out.extend(lineage(table, pid).into_iter().skip(1));
+        }
 
         let mut left_out = Vec::new();
         let mut ok = HashSet::new();
@@ -730,6 +976,10 @@ mod imp {
                 left_out.push((pid, why));
             } else if covers_excluded.contains(&pid) {
                 left_out.push((pid, "voice chat or stream runs under it"));
+            } else if disallowed(&pid) {
+                left_out.push((pid, "left out by your choice of apps"));
+            } else if covers_kept_out.contains(&pid) {
+                left_out.push((pid, "an app you left out runs under it"));
             } else {
                 ok.insert(pid);
             }
@@ -737,6 +987,42 @@ mod imp {
         let mut capture: Vec<u32> = ok.iter().copied().filter(|&pid| !lineage(table, pid).iter().skip(1).any(|a| ok.contains(a))).collect();
         capture.sort_unstable();
         Plan { capture, left_out }
+    }
+
+    pub fn audio_apps(windows: Vec<(u32, String)>) -> Result<Vec<AudioApp>, String> {
+        let _com = Com::init()?;
+        let playing = Sessions::new()?.playing();
+        Ok(merge_apps(&processes(), &playing, &windows, std::process::id()))
+    }
+
+    /// One row per lowercase exe, leaving out what can never be heard. A window's title names an
+    /// app better than its exe does.
+    fn merge_apps(table: &HashMap<u32, Proc>, playing: &HashMap<u32, bool>, windows: &[(u32, String)], own_pid: u32) -> Vec<AudioApp> {
+        let hidden = |pid: u32| lineage(table, pid).iter().any(|&p| p == own_pid || is_voice(table, p));
+        let mut rows: BTreeMap<String, AudioApp> = BTreeMap::new();
+        let row = |pid: u32, rows: &mut BTreeMap<String, AudioApp>| -> Option<String> {
+            let name = &table.get(&pid)?.name;
+            if hidden(pid) {
+                return None;
+            }
+            let exe = name.to_lowercase();
+            let stem = name.rsplit_once('.').map_or(name.as_str(), |(stem, _)| stem).to_string();
+            rows.entry(exe.clone()).or_insert(AudioApp { exe: exe.clone(), name: stem, playing: false });
+            Some(exe)
+        };
+        for (&pid, &on) in playing {
+            if let Some(exe) = row(pid, &mut rows) {
+                rows.get_mut(&exe).unwrap().playing |= on;
+            }
+        }
+        for (pid, title) in windows {
+            if let Some(exe) = row(*pid, &mut rows) {
+                rows.get_mut(&exe).unwrap().name = title.clone();
+            }
+        }
+        let mut apps: Vec<AudioApp> = rows.into_values().collect();
+        apps.sort_by_key(|a| (!a.playing, a.name.to_lowercase()));
+        apps
     }
 
     #[cfg(test)]
@@ -774,10 +1060,122 @@ mod imp {
             assert_eq!(m.add(900, &[[0.5, 0.5]; 100]), 60);
             m.add(960, &[[0.25, -0.25]; 10]);
             let mut pcm = vec![0f32; FRAME * 2];
-            m.take(&mut pcm);
+            m.take(&mut Mixer::new(960), &mut pcm);
             assert_eq!(&pcm[..2], &[0.75, 0.25]);
             assert_eq!(&pcm[80..82], &[0.0, 0.0]);
             assert_eq!(m.base, 1920);
+        }
+
+        #[test]
+        fn mic_bus_combines_before_clamping_and_stays_in_step() {
+            let (mut sound, mut bus) = (Mixer::new(960), Mixer::new(960));
+            sound.add(960, &[[0.75, -0.75], [1.5, 0.5], [-1.5, 0.25]]);
+            bus.add(960, &[[0.5, -0.5], [-1.0, 0.25], [0.25, 0.25]]);
+            let mut pcm = vec![0f32; FRAME * 2];
+            sound.take(&mut bus, &mut pcm);
+            assert_eq!(&pcm[..6], &[1.0, -1.0, 0.5, 0.75, -1.0, 0.5]);
+            assert_eq!((sound.base, bus.base), (1920, 1920));
+
+            bus.add(1920, &[[0.5, 0.5]; 3000]);
+            sound.skip_to(1920 + 960);
+            bus.skip_to(1920 + 960);
+            sound.take(&mut bus, &mut pcm);
+            assert_eq!(&pcm[..2], &[0.5, 0.5]);
+            assert_eq!(bus.buf.len(), 3000 - 960 - 960);
+            assert_eq!(sound.base, bus.base);
+        }
+
+        #[test]
+        fn clearing_the_mic_bus_leaves_nothing_to_encode() {
+            let (mut sound, mut bus) = (Mixer::new(960), Mixer::new(960));
+            sound.add(960, &[[0.25, 0.25]; 960]);
+            bus.add(960, &[[0.5, 0.5]; 2880]);
+            bus.clear();
+            assert_eq!(bus.base, 960);
+            let mut pcm = vec![0f32; FRAME * 2];
+            sound.take(&mut bus, &mut pcm);
+            assert!(pcm.chunks(2).all(|s| s == [0.25, 0.25]));
+            assert_eq!(bus.base, sound.base);
+        }
+
+        fn sample_table() -> HashMap<u32, Proc> {
+            let p = |parent: u32, name: &str| Proc { parent, name: name.into() };
+            [
+                (1, p(0, "explorer.exe")),
+                (2, p(1, "Discord.exe")),
+                (3, p(2, "Discord.exe")),
+                (10, p(1, "steam.exe")),
+                (11, p(10, "game.exe")),
+                (12, p(11, "crash_handler.exe")),
+                (20, p(1, "stream-desktop.exe")),
+                (21, p(20, "msedgewebview2.exe")),
+                (22, p(21, "msedgewebview2.exe")),
+                (30, p(1, "chrome.exe")),
+                (31, p(30, "chrome.exe")),
+            ]
+            .into_iter()
+            .collect()
+        }
+
+        fn names(list: &[&str]) -> Vec<String> {
+            list.iter().map(|s| s.to_string()).collect()
+        }
+
+        #[test]
+        fn excluding_steam_keeps_its_game() {
+            let sessions: HashSet<u32> = [10, 11, 31].into_iter().collect();
+            let plan = plan(&sample_table(), &sessions, 20, &Rules::except(&names(&["STEAM.exe"])));
+            assert_eq!(plan.capture, vec![11, 31]);
+            assert_eq!(plan.left_out, vec![(10, "left out by your choice of apps")]);
+        }
+
+        #[test]
+        fn excluding_a_child_keeps_its_parent_out_of_the_capture() {
+            let sessions: HashSet<u32> = [10, 11, 31].into_iter().collect();
+            let plan = plan(&sample_table(), &sessions, 20, &Rules::except(&names(&["game.exe"])));
+            assert_eq!(plan.capture, vec![31]);
+            let mut out = plan.left_out.clone();
+            out.sort();
+            assert_eq!(out, vec![(10, "an app you left out runs under it"), (11, "left out by your choice of apps")]);
+
+            // Silent right now, but capturing the tree would catch it the moment it plays.
+            let sessions: HashSet<u32> = [10].into_iter().collect();
+            let silent = super::plan(&sample_table(), &sessions, 20, &Rules::except(&names(&["game.exe"])));
+            assert!(silent.capture.is_empty());
+        }
+
+        #[test]
+        fn only_these_captures_only_what_was_asked() {
+            let sessions: HashSet<u32> = [1, 10, 11, 31].into_iter().collect();
+            let only = |list: &[&str]| plan(&sample_table(), &sessions, 20, &Rules::only(&names(list))).capture;
+            assert_eq!(only(&["chrome.exe"]), vec![31]);
+            assert_eq!(only(&["GAME.EXE"]), vec![11]); // its silent crash handler doesn't stop it
+            assert_eq!(only(&["steam.exe"]), Vec::<u32>::new()); // game.exe is playing under it
+            assert_eq!(only(&["steam.exe", "game.exe"]), vec![10]); // the tree, once
+            assert_eq!(only(&[]), Vec::<u32>::new());
+        }
+
+        #[test]
+        fn voice_and_stream_stay_out_even_if_listed() {
+            let sessions: HashSet<u32> = [3, 22, 31].into_iter().collect();
+            let plan_only = plan(&sample_table(), &sessions, 20, &Rules::only(&names(&["discord.exe", "msedgewebview2.exe", "chrome.exe"])));
+            assert_eq!(plan_only.capture, vec![31]);
+            let mut out = plan_only.left_out.clone();
+            out.sort();
+            assert_eq!(out, vec![(3, "voice chat"), (22, "stream")]);
+            // A listed parent can't be captured over a voice app beneath it.
+            let sessions: HashSet<u32> = [1].into_iter().collect();
+            assert!(plan(&sample_table(), &sessions, 20, &Rules::only(&names(&["explorer.exe"]))).capture.is_empty());
+        }
+
+        #[test]
+        fn rows_merge_by_exe_and_hide_what_can_never_be_heard() {
+            let table = sample_table();
+            let playing: HashMap<u32, bool> = [(3, true), (22, true), (30, false), (31, true), (11, false)].into_iter().collect();
+            let windows = vec![(11, "Ember Depths".to_string()), (2, "Discord".to_string()), (10, "Steam".to_string())];
+            let apps = merge_apps(&table, &playing, &windows, 20);
+            let row = |exe: &str, name: &str, playing| AudioApp { exe: exe.into(), name: name.into(), playing };
+            assert_eq!(apps, vec![row("chrome.exe", "chrome", true), row("game.exe", "Ember Depths", false), row("steam.exe", "Steam", false)]);
         }
 
         #[test]
@@ -798,7 +1196,7 @@ mod imp {
             .into_iter()
             .collect();
             let sessions: HashSet<u32> = [1, 3, 10, 11, 22, 31].into_iter().collect();
-            let plan = plan(&table, &sessions, 20);
+            let plan = plan(&table, &sessions, 20, &Rules::except(&[]));
             assert_eq!(plan.capture, vec![10, 31]);
             let mut out = plan.left_out.clone();
             out.sort();

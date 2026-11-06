@@ -9,7 +9,7 @@
 use std::io::Write;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
-use stream_desktop_lib::live::{audio, AudioMode, Clock};
+use stream_desktop_lib::live::{audio, AudioControls, AudioMode, Clock};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -18,7 +18,7 @@ fn main() {
         std::process::exit(2);
     }
     let mode = match args[0].as_str() {
-        "all" => AudioMode::AllExceptVoice,
+        "all" => AudioMode::AllExceptVoice { except: Vec::new() },
         "off" => AudioMode::Off,
         pid => AudioMode::App { pid: pid.parse().expect("pid") },
     };
@@ -37,7 +37,7 @@ fn main() {
 
     let clock = Clock::start();
     let (tx, rx) = mpsc::sync_channel(256);
-    let stage = audio::start(mode, clock, tx).unwrap_or_else(|e| panic!("start failed: {e}"));
+    let stage = audio::start(mode, clock, tx, AudioControls::fixed()).unwrap_or_else(|e| panic!("start failed: {e}"));
     let started = Instant::now();
     let mut packets = Vec::new();
     while started.elapsed().as_secs_f64() < seconds {

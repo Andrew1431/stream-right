@@ -412,6 +412,8 @@ select {
 }
 
 .stage {
+  position: relative;
+  isolation: isolate;
   min-width: 0;
   min-height: 0;
   background: radial-gradient(120% 80% at 50% -20%, #262a31 0%, var(--graphite) 55%, var(--graphite-deep) 100%);
@@ -808,4 +810,151 @@ img.target-icon {
 
 .host-own button {
   white-space: nowrap;
+}
+
+.bitrate-input {
+  width: 72px;
+}
+
+/* Live plate: the mic key and Modify, while live */
+
+.plate {
+  display: flex;
+  gap: 6px;
+  margin: 0 8px 8px;
+  padding: 6px;
+  border-radius: 10px;
+  border: 1px solid var(--seam);
+  background: var(--graphite-deep);
+  box-shadow: inset 0 1px 3px rgb(0 0 0 / 0.7), 0 1px 0 var(--edge);
+}
+
+.plate.floating {
+  /* Centred: the corners hold the name label and the tile controls */
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  z-index: 1;
+  margin: 0;
+  box-shadow: var(--float);
+}
+
+.plate-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px;
+  border: 1px solid var(--seam);
+  background: linear-gradient(180deg, var(--steel-hi), var(--steel-lo));
+  box-shadow: var(--machined);
+  color: var(--platinum-lo);
+  font-size: 0.85rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.plate-key:hover:not(:disabled) {
+  color: var(--platinum);
+  filter: none;
+}
+
+.plate-key.on,
+.plate-key.on:hover:not(:disabled) {
+  border-color: #8f979f;
+  background: var(--platinum-key);
+  box-shadow: inset 0 1px 0 #fff, 0 1px 2px rgb(0 0 0 / 0.5);
+  color: #16191d;
+  font-weight: 600;
+}
+
+.lamp {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #4a515b, #14161a 70%);
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.5);
+}
+
+.plate-key.opening .lamp {
+  background: radial-gradient(circle at 35% 30%, #f4d596, var(--warn) 60%);
+}
+
+.plate-key.on .lamp {
+  background: radial-gradient(circle at 35% 30%, #ff9a90, var(--tally) 55%, #a8241b);
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.35), 0 0 8px var(--tally);
+}
+
+/* Choosing apps, inline under the sound row */
+
+.picker-modes {
+  align-self: flex-start;
+}
+
+button.link {
+  flex: none;
+  padding: 2px 4px;
+  border: none;
+  background: none;
+  box-shadow: none;
+  color: var(--platinum-lo);
+  font-size: 0.85rem;
+  font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+button.link:hover:not(:disabled) {
+  color: var(--platinum);
+  filter: none;
+}
+
+.app-rows {
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  max-height: 200px;
+  overflow-y: auto;
+  border-radius: 10px;
+  background: var(--graphite-deep);
+  box-shadow: inset 0 2px 8px rgb(0 0 0 / 0.8), 0 1px 0 var(--edge);
+}
+
+.app-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 5px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.app-row:hover {
+  background: rgb(255 255 255 / 0.04);
+}
+
+.app-row input {
+  margin: 0;
+  accent-color: var(--platinum-lo);
+}
+
+.app-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-state {
+  flex: none;
+}
+
+.app-state.playing {
+  color: var(--ok);
+}
+
+.footnote {
+  margin: 0;
 }

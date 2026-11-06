@@ -45,6 +45,9 @@ pub fn run() {
             live::session::go_live,
             live::session::stop_live,
             live::session::live_status,
+            live::session::set_live_mic,
+            live::session::modify_live,
+            windows_list::list_audio_apps,
         ])
         .run(tauri::generate_context!())
         .expect("error while running stream");

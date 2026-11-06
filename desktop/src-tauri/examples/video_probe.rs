@@ -44,7 +44,7 @@ mod probe {
         let out = args.get(2).cloned().unwrap_or_else(|| std::env::temp_dir().join("video_probe.h264").display().to_string());
         let arg = |i: usize, d: u32| args.get(i).and_then(|s| s.parse().ok()).unwrap_or(d);
         let seconds = arg(3, 5);
-        let settings = VideoSettings { height: arg(4, 1080), fps: arg(5, 60), bitrate_kbps: arg(6, 8000), layers: arg(7, 1) };
+        let settings = VideoSettings { height: arg(4, 1080), fps: arg(5, 60), bitrate_kbps: arg(6, 8000), total_kbps: 0, layers: arg(7, 1) };
 
         let (hwnd_tx, hwnd_rx) = mpsc::channel();
         let window = std::thread::spawn(move || unsafe { window_thread(hwnd_tx) });
@@ -63,7 +63,7 @@ mod probe {
         let (key_tx, key_rx) = mpsc::sync_channel(4);
         let cpu0 = cpu_time();
         let t0 = Instant::now();
-        let stage = match video::start(source, settings, clock, tx, key_rx) {
+        let stage = match video::start(source, settings, clock, tx, key_rx, mpsc::channel().1) {
             Ok(stage) => stage,
             Err(e) => {
                 eprintln!("start failed: {e}");

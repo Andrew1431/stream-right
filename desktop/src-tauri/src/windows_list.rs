@@ -33,6 +33,12 @@ pub fn list_monitors() -> Vec<MonitorTarget> {
     imp::monitors()
 }
 
+/// Apps for the sound picker: those with an audio session, plus windowed ones that have none yet.
+#[tauri::command]
+pub async fn list_audio_apps() -> Result<Vec<crate::live::audio::AudioApp>, String> {
+    tauri::async_runtime::spawn_blocking(|| crate::live::audio::audio_apps(imp::windowed_apps())).await.map_err(|e| e.to_string())?
+}
+
 #[cfg(windows)]
 mod imp {
     use super::{CaptureTarget, MonitorTarget};
@@ -62,6 +68,15 @@ mod imp {
         out
     }
 
+    /// (pid, title) of the same windows as `list`, without the slow part (icons).
+    pub fn windowed_apps() -> Vec<(u32, String)> {
+        let mut out: Vec<(u32, String)> = Vec::new();
+        unsafe {
+            let _ = EnumWindows(Some(collect_plain), LPARAM(&mut out as *mut _ as isize));
+        }
+        out
+    }
+
     pub fn monitors() -> Vec<MonitorTarget> {
         let mut out: Vec<MonitorTarget> = Vec::new();
         unsafe {
@@ -85,13 +100,23 @@ mod imp {
 
     unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> BOOL {
         let out = &mut *(lparam.0 as *mut Vec<CaptureTarget>);
-        if let Some(target) = describe(hwnd) {
+        if let Some((mut target, path)) = describe(hwnd) {
+            target.icon = crate::icons::exe_icon(&path);
             out.push(target);
         }
         true.into()
     }
 
-    unsafe fn describe(hwnd: HWND) -> Option<CaptureTarget> {
+    unsafe extern "system" fn collect_plain(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let out = &mut *(lparam.0 as *mut Vec<(u32, String)>);
+        if let Some((target, _)) = describe(hwnd) {
+            out.push((target.pid, target.title));
+        }
+        true.into()
+    }
+
+    /// The window as a target with no icon yet, and its exe's path.
+    unsafe fn describe(hwnd: HWND) -> Option<(CaptureTarget, String)> {
         if !IsWindowVisible(hwnd).as_bool() {
             return None;
         }
@@ -132,8 +157,7 @@ mod imp {
 
         let path = exe_path(pid);
         let exe = path.rsplit('\\').next().unwrap_or_default().to_string();
-        let icon = crate::icons::exe_icon(&path);
-        Some(CaptureTarget { id: hwnd.0 as isize, title, exe, pid, fullscreen: covers_monitor(hwnd), icon })
+        Some((CaptureTarget { id: hwnd.0 as isize, title, exe, pid, fullscreen: covers_monitor(hwnd), icon: None }, path))
     }
 
     unsafe fn exe_path(pid: u32) -> String {
@@ -173,6 +197,10 @@ mod imp {
     }
 
     pub fn monitors() -> Vec<super::MonitorTarget> {
+        Vec::new()
+    }
+
+    pub fn windowed_apps() -> Vec<(u32, String)> {
         Vec::new()
     }
 }

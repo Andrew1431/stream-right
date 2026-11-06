@@ -171,6 +171,14 @@ impl<F: Fn(LiveEvent)> Sender_<'_, F> {
             if self.stopping() || !(video_open || audio_open) {
                 break;
             }
+            // No picture left (shared window closed, encoder gone). Going on with sound alone could
+            // leave a mic open on a stream nobody knows is still running.
+            if !video_open {
+                if let Some(c) = conn.take() {
+                    delete(&agent, &c.location, &self.token);
+                }
+                return Err("the picture stopped. If you were sharing a window, it may have closed.".into());
+            }
 
             if conn.is_none() {
                 if attempt > 0 {
@@ -347,7 +355,7 @@ impl<F: Fn(LiveEvent)> Sender_<'_, F> {
     fn idle(&self, dur: Duration, video_open: &mut bool, audio_open: &mut bool) -> bool {
         let until = Instant::now() + dur;
         while Instant::now() < until {
-            if self.stopping() || !(*video_open || *audio_open) {
+            if self.stopping() || !*video_open {
                 return false;
             }
             match self.rx.recv_timeout(until.saturating_duration_since(Instant::now()).min(Duration::from_millis(100))) {
