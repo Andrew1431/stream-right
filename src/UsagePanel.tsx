@@ -4,26 +4,39 @@ import { DASHBOARD, PRICE_PER_GB, UsageBar, dollars, gb, overCost, type Usage } 
 import type { Subscriber } from "./media";
 
 const REFRESH_MS = 60_000;
+const IDLE_REFRESH_MS = 5 * 60_000;
+const CHECK_MS = 30_000;
 const RATE_SAMPLE_MS = 2_000;
 
-// Polls /api/usage while `active`. Null until a usable answer arrives (no token, bad key, or an API error).
-export function useUsage(creatorKey: string, active = true): Usage | null {
+// Polls /api/usage, every minute while `open` (the panel is showing) and otherwise slowly, only while
+// this page has focus: a room left open somewhere makes no requests. Null until a usable answer
+// arrives (no token, bad key, or an API error).
+export function useUsage(creatorKey: string, open: boolean): Usage | null {
   const [usage, setUsage] = useState<Usage | null>(null);
   useEffect(() => {
-    if (!creatorKey || !active) return;
+    if (!creatorKey) return;
     let stopped = false;
+    const every = open ? REFRESH_MS : IDLE_REFRESH_MS;
+    let last = Date.now();
     const poll = () =>
       fetch("/api/usage", { headers: { Authorization: `Bearer ${creatorKey}` } })
         .then((r) => (r.ok ? (r.json() as Promise<UsageResponse>) : null))
         .then((u) => !stopped && setUsage(u && "egressBytes" in u ? u : null))
         .catch(() => {});
+    const pollIfDue = () => {
+      if (Date.now() - last < every || (!open && (document.hidden || !document.hasFocus()))) return;
+      last = Date.now();
+      poll();
+    };
     poll();
-    const id = setInterval(poll, REFRESH_MS);
+    const id = setInterval(pollIfDue, Math.min(every, CHECK_MS));
+    addEventListener("focus", pollIfDue);
     return () => {
       stopped = true;
       clearInterval(id);
+      removeEventListener("focus", pollIfDue);
     };
-  }, [creatorKey, active]);
+  }, [creatorKey, open]);
   return usage;
 }
 

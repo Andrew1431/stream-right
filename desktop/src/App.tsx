@@ -7,6 +7,7 @@ import { liveStatus, mbps, onLiveEvent, setLiveMic, startLive, stopLive, type Li
 import { inShell, openExternal } from "./native";
 import { NewRoomSheet, RoomMenu, ServerUsage } from "./OwnerTools";
 import { Sheet } from "./Sheet";
+import { everyWhileFocused } from "./whileFocused";
 import {
   addInvite,
   inviteLink,
@@ -407,11 +408,10 @@ function usePeeks(servers: Server[]): Record<string, Peek | null> {
       Promise.all(all.map(async (x) => [key(x.origin, x.room), await peek(x.origin, x.room)] as const)).then(
         (entries) => !stopped && setPeeks(Object.fromEntries(entries)),
       );
-    poll();
-    const id = setInterval(poll, PEEK_MS);
+    const stop = everyWhileFocused(poll, PEEK_MS);
     return () => {
       stopped = true;
-      clearInterval(id);
+      stop();
     };
   }, [signature]);
   return peeks;

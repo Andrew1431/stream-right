@@ -104,7 +104,8 @@ export default {
       // Open to any origin so the desktop app can show live status for rooms on every server it
       // holds links for. The token is the credential, and the answer is just two counts.
       const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "content-type" };
-      if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: { ...cors, "Access-Control-Allow-Methods": "POST" } });
+      // Without a max age browsers repeat the preflight every few seconds, doubling each poll.
+      if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: { ...cors, "Access-Control-Allow-Methods": "POST", "Access-Control-Max-Age": "86400" } });
       if (req.method !== "POST" || !ROOM_ID_PATTERN.test(peek[1])) return json({ error: "Not found" }, 404);
       const body = (await req.json().catch(() => ({}))) as { token?: unknown };
       const result: RoomPeek =

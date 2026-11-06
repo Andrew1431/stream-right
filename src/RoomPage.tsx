@@ -152,7 +152,7 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
   // Inside the desktop app, the app holds the creator key for each server.
   const creatorKey = inDesktop ? (shell?.creatorKey ?? "") : storedKey;
   // Only for whoever saved the creator key on this browser, and only if the server has an API token.
-  const usage = useUsage(creatorKey);
+  const usage = useUsage(creatorKey, showUsage);
   const [focusId, setFocusId] = useState<string | null>(null);
   // Quality is chosen per stream, from the menu on that stream's tile.
   const [qualities, setQualities] = useState<Record<string, Quality>>({});
