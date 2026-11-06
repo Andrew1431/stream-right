@@ -24,6 +24,7 @@ const NO_CLIPS_STORE = "noClips";
 const CLIP_MUTED_STORE = "clipMuted";
 const CLIPS_SEEN_STORE = "clipsNoticeSeen";
 const VOLUME_STORE = "streamVolumes";
+const UNMUTED_STORE = "streamUnmuted";
 const TOAST_MS = 6_000;
 const CLIP_DONE_MS = 4_000;
 const CLIP_FAILED_MS = 3_500;
@@ -158,7 +159,30 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
   // Keyed by name so a streamer's volume survives reconnects and visits. Unmuting isn't
   // remembered: a reload would then try to autoplay with sound, which browsers block.
   const [volumes, setVolumes] = useState<Record<string, number>>(() => load(VOLUME_STORE, {}));
-  const [unmuted, setUnmuted] = useState<Record<string, boolean>>({});
+  const [unmuted, setUnmuted] = useState<Record<string, boolean>>(() => load(UNMUTED_STORE, {}));
+  // Streams you left unmuted that the browser won't start with sound until you've clicked on the
+  // page. Kept apart from your choice so a reload can't overwrite it.
+  const [autoplayHeld, setAutoplayHeld] = useState<Record<string, boolean>>({});
+
+  function setHearing(name: string, hearing: boolean) {
+    setUnmuted((prev) => {
+      const next = { ...prev, [name]: hearing };
+      save(UNMUTED_STORE, next);
+      return next;
+    });
+  }
+
+  const holding = Object.keys(autoplayHeld).length > 0;
+  useEffect(() => {
+    if (!holding) return;
+    const release = () => setAutoplayHeld({});
+    document.addEventListener("click", release, true);
+    document.addEventListener("keydown", release, true);
+    return () => {
+      document.removeEventListener("click", release, true);
+      document.removeEventListener("keydown", release, true);
+    };
+  }, [holding]);
   const [showObs, setShowObs] = useState(false);
   const [obsKey, setObsKey] = useState(() => loadObsKey(props.roomId));
   const [myObsKeyId, setMyObsKeyId] = useState("");
@@ -478,14 +502,15 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
       clipsOff={clipsAllowed && !!m.stream?.noClips}
       onQuality={(q) => setQualities((prev) => ({ ...prev, [m.id]: q }))}
       volume={volumes[m.name] ?? 1}
-      muted={!unmuted[m.name]}
+      muted={!unmuted[m.name] || !!autoplayHeld[m.name]}
       onVolume={(v) => {
         const next = { ...volumes, [m.name]: v };
         setVolumes(next);
         save(VOLUME_STORE, next);
-        setUnmuted((prev) => ({ ...prev, [m.name]: v > 0 }));
+        setHearing(m.name, v > 0);
       }}
-      onMuted={(muted) => setUnmuted((prev) => ({ ...prev, [m.name]: !muted }))}
+      onMuted={(muted) => setHearing(m.name, !muted)}
+      onAutoplayBlocked={() => setAutoplayHeld((prev) => ({ ...prev, [m.name]: true }))}
     />
   );
 
@@ -920,6 +945,7 @@ function VideoTile(props: {
   muted?: boolean;
   onVolume?: (v: number) => void;
   onMuted?: (muted: boolean) => void;
+  onAutoplayBlocked?: () => void;
 }) {
   const ref = useRef<HTMLVideoElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -962,6 +988,15 @@ function VideoTile(props: {
   useEffect(() => {
     if (ref.current) ref.current.volume = props.volume ?? 1;
   }, [props.volume, shown]);
+
+  // A remembered "unmuted" can meet a browser that won't autoplay sound yet. Fall back to muted so
+  // the picture still plays; the room restores the sound on your first click.
+  useEffect(() => {
+    if (!shown || !ref.current) return;
+    ref.current.play().catch((e: unknown) => {
+      if (!muted && e instanceof DOMException && e.name === "NotAllowedError") callbacks.current.onAutoplayBlocked?.();
+    });
+  }, [shown, muted]);
 
   function toggleFullscreen() {
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
@@ -1009,7 +1044,8 @@ function VideoTile(props: {
   );
 }
 
-// Mute toggle plus a slider that slides out on hover; the level is per streamer.
+// One pill: mute toggle, slider, and what you're hearing in words. The slider keeps your level
+// while muted, so unmuting comes back to where it was.
 function VolumeControl(props: {
   name: string;
   volume: number;
@@ -1018,27 +1054,29 @@ function VolumeControl(props: {
   onMuted: (muted: boolean) => void;
 }) {
   const silent = props.muted || props.volume === 0;
-  const level = silent ? 0 : props.volume;
+  const percent = Math.round(props.volume * 100);
   return (
-    <div className="volume">
+    <div className={silent ? "volume silent" : "volume"}>
+      <button
+        type="button"
+        aria-label={silent ? `Unmute ${props.name}` : `Mute ${props.name}`}
+        title={silent ? "Unmute" : "Mute"}
+        onClick={() => (silent && props.volume === 0 ? props.onVolume(1) : props.onMuted(!silent))}
+      >
+        <SpeakerGlyph level={silent ? 0 : props.volume} />
+      </button>
       <input
         type="range"
         min={0}
         max={1}
         step={0.05}
-        value={level}
+        value={props.volume}
         aria-label={`${props.name}'s volume`}
-        style={{ "--level": `${level * 100}%` } as CSSProperties}
+        aria-valuetext={silent ? `Muted, ${percent} percent` : `${percent} percent`}
+        style={{ "--level": `${props.volume * 100}%` } as CSSProperties}
         onChange={(e) => props.onVolume(Number(e.target.value))}
       />
-      <button
-        type="button"
-        aria-label={silent ? `Unmute ${props.name}` : `Mute ${props.name}`}
-        title={silent ? "Unmute" : `Mute (${Math.round(level * 100)}%)`}
-        onClick={() => (silent && props.volume === 0 ? props.onVolume(1) : props.onMuted(!silent))}
-      >
-        <SpeakerGlyph level={level} />
-      </button>
+      <span className="volume-level small">{silent ? "Muted" : `${percent}%`}</span>
     </div>
   );
 }

@@ -873,6 +873,7 @@ button.menu-item:focus-visible {
 
 .tile-label,
 .quality-pill,
+.volume,
 .tile-actions button {
   background: rgb(18 20 24 / 0.72);
   backdrop-filter: blur(8px);
@@ -899,6 +900,7 @@ button.menu-item:focus-visible {
   position: absolute;
   right: 10px;
   bottom: 10px;
+  max-width: calc(100% - 20px);
   display: flex;
   gap: 6px;
   align-items: center;
@@ -1389,18 +1391,32 @@ button.thumb:hover .tile {
   font-weight: 500;
 }
 
-/* Per-stream volume: the speaker pill, with a slider that slides out to its left on hover */
+/* Per-stream volume: speaker, slider and level sharing one pill */
 
 .volume {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
+  min-width: 0;
+  padding-right: 11px;
+  border-radius: 999px;
+}
+
+.volume-level {
+  min-width: 3.2em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--platinum);
+}
+
+.volume.silent .volume-level {
+  color: var(--platinum-lo);
 }
 
 .volume input[type="range"] {
-  flex: none;
-  width: 0;
-  opacity: 0;
+  flex: 0 1 90px;
+  min-width: 36px;
+  width: 90px;
   margin: 0;
   padding: 0;
   border: none;
@@ -1410,13 +1426,19 @@ button.thumb:hover .tile {
   border-radius: 999px;
   background: linear-gradient(to right, var(--platinum) var(--level), rgb(255 255 255 / 0.18) var(--level));
   cursor: pointer;
-  transition: width 0.15s, opacity 0.15s;
 }
 
-.volume:hover input[type="range"],
-.volume:focus-within input[type="range"] {
-  width: 90px;
-  opacity: 1;
+/* Muted: the thumb stays at your level, greyed, so it's clear where unmuting returns to */
+.volume.silent input[type="range"] {
+  background: rgb(255 255 255 / 0.18);
+}
+
+.volume.silent input[type="range"]::-webkit-slider-thumb {
+  background: var(--platinum-lo);
+}
+
+.volume.silent input[type="range"]::-moz-range-thumb {
+  background: var(--platinum-lo);
 }
 
 .volume input[type="range"]::-webkit-slider-thumb {
@@ -1439,13 +1461,11 @@ button.thumb:hover .tile {
 .tile-actions .volume button {
   display: grid;
   place-items: center;
-  padding: 4px 9px;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .volume input[type="range"] {
-    transition: none;
-  }
+  padding: 4px 4px 4px 9px;
+  border: none;
+  background: none;
+  backdrop-filter: none;
+  box-shadow: none;
 }
 
 /* Inside the desktop app: the app's sidebar toggle leads the bar, and Go live replaces the browser picker */
