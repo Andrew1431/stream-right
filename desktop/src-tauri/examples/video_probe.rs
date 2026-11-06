@@ -2,7 +2,7 @@
 //! primary monitor), runs `live::video::start` for a few seconds, writes the Annex B stream to a
 //! file and prints frame, keyframe, latency and CPU numbers. Check the file with ffprobe/ffmpeg.
 //!
-//! cargo run --example video_probe -- <window|monitor|resize|static|close> <out.h264> [seconds] [height] [fps] [kbps] [layers]
+//! cargo run --example video_probe -- <window|monitor|resize|static|close> <out.h264> [seconds] [height] [fps] [kbps] [layers] [window fps]
 //!
 //! With more than one layer only the full layer goes to the file; every layer's numbers are printed.
 
@@ -35,6 +35,8 @@ mod probe {
     static PAINTS: AtomicU32 = AtomicU32::new(0);
     static ANIMATE: AtomicBool = AtomicBool::new(true);
     static QUIT: AtomicBool = AtomicBool::new(false);
+    /// Time between the window's paints, in microseconds.
+    static PAINT_EVERY_US: AtomicU64 = AtomicU64::new(4_000);
     /// Requested window size, (w << 32 | h); 0 = none pending.
     static RESIZE: AtomicU64 = AtomicU64::new(0);
 
@@ -45,6 +47,7 @@ mod probe {
         let arg = |i: usize, d: u32| args.get(i).and_then(|s| s.parse().ok()).unwrap_or(d);
         let seconds = arg(3, 5);
         let settings = VideoSettings { height: arg(4, 1080), fps: arg(5, 60), bitrate_kbps: arg(6, 8000), total_kbps: 0, layers: arg(7, 1) };
+        PAINT_EVERY_US.store(1_000_000 / arg(8, 250).max(1) as u64, Ordering::Relaxed);
 
         let (hwnd_tx, hwnd_rx) = mpsc::channel();
         let window = std::thread::spawn(move || unsafe { window_thread(hwnd_tx) });
@@ -80,6 +83,7 @@ mod probe {
         let mut sizes: Vec<(u64, u32, u32)> = Vec::new();
         let mut first_pts = None;
         let mut last_pts = 0u64;
+        let mut steps: Vec<u64> = Vec::new();
         let mut requested_at = None;
         let mut request_answered = None;
         let mut step = 0;
@@ -127,6 +131,9 @@ mod probe {
                     let now = clock.now_us();
                     if frame.pts_us <= last_pts && frames > 0 {
                         println!("non-increasing pts {} after {last_pts}", frame.pts_us);
+                    }
+                    if frames > 0 {
+                        steps.push(frame.pts_us.saturating_sub(last_pts));
                     }
                     last_pts = frame.pts_us;
                     first_pts.get_or_insert(frame.pts_us);
@@ -178,6 +185,10 @@ mod probe {
         let gaps: Vec<f64> = keys.windows(2).map(|k| (k[1] - k[0]) as f64 / 1e6).collect();
         println!("frames: {frames} over {span:.2}s of pts = {:.1} fps (window painted {} times)", frames as f64 / span.max(0.001), PAINTS.load(Ordering::Relaxed));
         println!("bitrate: {:.0} kbps", bytes as f64 * 8.0 / span.max(0.001) / 1000.0);
+        let under_1ms = steps.iter().filter(|s| **s < 1_000).count();
+        steps.sort_unstable();
+        let step = |p: f64| steps.get(((steps.len() as f64 - 1.0) * p) as usize).copied().unwrap_or(0) as f64 / 1000.0;
+        println!("pts step ms: min {:.1} p50 {:.1} p99 {:.1} max {:.1}; {under_1ms} under 1 ms", step(0.0), step(0.5), step(0.99), step(1.0));
         println!("keyframes: {} at pts(s) {:?}", keys.len(), keys.iter().map(|k| format!("{:.2}", *k as f64 / 1e6)).collect::<Vec<_>>());
         println!("max keyframe gap: {:.2}s", gaps.iter().cloned().fold(0.0, f64::max));
         println!("keyframe request answered in: {:?} ms", request_answered.map(|us| us as f64 / 1000.0));
@@ -233,7 +244,7 @@ mod probe {
             if ANIMATE.load(Ordering::Relaxed) {
                 let _ = InvalidateRect(Some(hwnd), None, false);
             }
-            let due = -40_000i64; // 4 ms
+            let due = -(PAINT_EVERY_US.load(Ordering::Relaxed) as i64 * 10);
             let _ = SetWaitableTimer(timer, &due, 0, None, None, false);
             WaitForSingleObject(timer, INFINITE);
         }

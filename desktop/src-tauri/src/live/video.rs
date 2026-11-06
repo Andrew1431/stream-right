@@ -7,9 +7,10 @@
 //! from those. One thread runs capture, pacing and encoder input; a second one services the
 //! encoder's events and sends its output.
 //!
-//! Pacing: frames go out at most `fps` times a second. A frame that arrives early is held and
-//! replaced by newer ones until its slot comes; when the source stops drawing (WGC only delivers
-//! on change), the last frame is sent again each slot so the stream never stalls.
+//! Pacing: frames go out at most `fps` times a second, so any rate works as a cap. A frame that
+//! arrives early is held and replaced by newer ones until its slot comes; a slower source goes out
+//! at its own rate. When the source stops drawing (WGC only delivers on change), the last frame is
+//! sent again each slot so the stream never stalls.
 //!
 //! Simulcast layers are scaled from the captured frame by their own video processor pass and
 //! encoded by their own encoder; lower layers take a subset of the full layer's frames.
@@ -50,6 +51,12 @@ const IDR_INTERVAL_US: u64 = 2_000_000;
 /// accepted. Some drivers only fail once frames arrive.
 #[cfg_attr(not(windows), allow(dead_code))]
 const TRIAL: std::time::Duration = std::time::Duration::from_secs(3);
+/// Shortest quiet spell from the source that counts as a stall rather than its normal frame gap.
+#[cfg_attr(not(windows), allow(dead_code))]
+const MIN_STALL_US: u64 = 50_000;
+/// Smallest step between two frames' timestamps.
+#[cfg_attr(not(windows), allow(dead_code))]
+const MIN_PTS_GAP_US: u64 = 1_000;
 
 /// Frame pacing for a frame rate, in microseconds.
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -58,16 +65,77 @@ struct Pacing {
     interval: u64,
     /// A fresh frame may go this much before its slot.
     early: u64,
-    /// Wait this long past a slot for a fresh frame before repeating.
-    grace: u64,
+    /// Repeat the last frame only once the source has been quiet this long. A source slower than
+    /// the frame rate is simply sent at its own rate; filling its gaps would only add near-duplicate
+    /// timestamps and spend bits on nothing.
+    stall: u64,
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
 impl Pacing {
     fn new(fps: u32) -> Pacing {
         let interval = 1_000_000 / fps.max(1) as u64;
-        Pacing { interval, early: interval / 4, grace: interval / 2 }
+        Pacing { interval, early: interval / 4, stall: (interval * 3 / 2).max(MIN_STALL_US) }
     }
+
+    /// When the next frame may go: a fresh one on its slot; a repeat once the source has stalled,
+    /// then every interval, so a still picture keeps sharpening.
+    fn due(&self, dirty: bool, slot: u64, last_fresh: u64, last_sent: u64) -> u64 {
+        if dirty {
+            (slot + self.interval).saturating_sub(self.early)
+        } else {
+            (last_fresh + self.stall).max(last_sent + self.interval)
+        }
+    }
+}
+
+/// Keeps the bitrate at what was asked for when the source runs below the frame rate. The encoder
+/// budgets bitrate / frame rate per frame, so a 240 fps target fed 60 frames would only reach a
+/// quarter of its bitrate; this raises the encoder's figure by the shortfall.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Debug)]
+struct RateMatch {
+    fps: u32,
+    bps: u32,
+    current_bps: u32,
+    window_start: Option<u64>,
+    frames: u32,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+impl RateMatch {
+    const WINDOW_US: u64 = 1_000_000;
+    const MAX_SCALE: f64 = 4.0;
+
+    fn new(fps: u32, bps: u32) -> RateMatch {
+        RateMatch { fps, bps, current_bps: bps, window_start: None, frames: 0 }
+    }
+
+    /// Counts a frame; returns a new bitrate for the encoder when it should change.
+    fn on_frame(&mut self, pts: u64) -> Option<u32> {
+        let start = *self.window_start.get_or_insert(pts);
+        self.frames += 1;
+        let elapsed = pts.saturating_sub(start);
+        if elapsed < Self::WINDOW_US {
+            return None;
+        }
+        let actual = self.frames as f64 * 1e6 / elapsed as f64;
+        self.window_start = Some(pts);
+        self.frames = 0;
+        let wanted = (self.bps as f64 * (self.fps as f64 / actual).clamp(1.0, Self::MAX_SCALE)) as u32;
+        if wanted.abs_diff(self.current_bps) <= self.current_bps / 10 {
+            return None;
+        }
+        self.current_bps = wanted;
+        Some(wanted)
+    }
+}
+
+/// A frame's timestamp: when it was captured (a repeat: now), always clearly after the last one.
+/// A frame captured just before a repeat went out would otherwise share its RTP timestamp.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn next_pts(fresh: Option<u64>, now: u64, last_pts: u64) -> u64 {
+    fresh.unwrap_or(now).max(last_pts + MIN_PTS_GAP_US)
 }
 
 /// `asked` as a running stage can take it: the number of layers is set before going live, because
@@ -362,6 +430,8 @@ mod imp {
         let mut held: Option<Held> = None;
         let mut dirty = false; // `held` hasn't been sent yet
         let mut slot = 0u64; // session time of the last sent slot
+        let mut last_fresh = 0u64; // when a new picture last went out
+        let mut last_sent = 0u64; // when any frame last went out
         let mut sent_any = false;
         let mut last_pts = 0u64;
         let mut pending_size: Option<((u32, u32), Instant)> = None;
@@ -483,7 +553,7 @@ mod imp {
                     }
                 }
             }
-            let Pacing { interval, early, grace } = pace;
+            let interval = pace.interval;
 
             let mut blocked = false;
             if let Some(frame) = &held {
@@ -508,12 +578,15 @@ mod imp {
                 }
 
                 let now = clock.now_us();
-                let due = if dirty { (slot + interval).saturating_sub(early) } else { slot + interval + grace };
-                if !sent_any || now >= due {
-                    let pts = if dirty { frame.pts } else { now }.max(last_pts + 1);
+                if !sent_any || now >= pace.due(dirty, slot, last_fresh, last_sent) {
+                    let pts = next_pts(dirty.then_some(frame.pts), now, last_pts);
                     let (full, lower) = layers.split_at_mut(1);
                     match full[0].submit(&gpu, frame, pts) {
                         Ok(true) => {
+                            if dirty {
+                                last_fresh = now;
+                            }
+                            last_sent = now;
                             dirty = false;
                             slot = if !sent_any || now > slot + 2 * interval { now } else { slot + interval };
                             sent_any = true;
@@ -542,7 +615,7 @@ mod imp {
             }
             let wait_ms = match &held {
                 Some(_) => {
-                    let due = if dirty { (slot + interval).saturating_sub(early) } else { slot + interval + grace };
+                    let due = pace.due(dirty, slot, last_fresh, last_sent);
                     let wait_us = due.saturating_sub(clock.now_us()).max(1) as i64;
                     let rel = -(wait_us * 10);
                     let _ = SetWaitableTimer(timer.0, &rel, 0, None, None, false);
@@ -658,6 +731,9 @@ mod imp {
             };
             let queued = encoder.submit(gpu, conv, frame, pts, self.interval, force)?;
             if queued {
+                if let Some(bps) = encoder.rate.on_frame(pts) {
+                    let _ = set_u32(&encoder.codec, &CODECAPI_AVEncCommonMeanBitRate, bps);
+                }
                 if force {
                     self.want_key = false;
                     self.last_forced = pts;
@@ -1027,6 +1103,7 @@ mod imp {
     struct Encoder {
         mft: IMFTransform,
         codec: ICodecAPI,
+        rate: RateMatch,
         allocator: IMFVideoSampleAllocatorEx,
         input_id: u32,
         size: (u32, u32),
@@ -1196,7 +1273,7 @@ mod imp {
                 })
                 .map_err(|e| e.to_string())?;
 
-            Ok(Encoder { mft, codec, allocator, input_id, size, shared, events: Some(events), done, activate })
+            Ok(Encoder { mft, codec, rate: RateMatch::new(fps, bps), allocator, input_id, size, shared, events: Some(events), done, activate })
         }
 
         fn failure(&self) -> Option<String> {
@@ -1392,9 +1469,94 @@ mod tests {
 
     #[test]
     fn pacing_follows_the_frame_rate() {
-        assert_eq!(Pacing::new(60), Pacing { interval: 16_666, early: 4_166, grace: 8_333 });
-        assert_eq!(Pacing::new(30), Pacing { interval: 33_333, early: 8_333, grace: 16_666 });
+        assert_eq!(Pacing::new(60), Pacing { interval: 16_666, early: 4_166, stall: 50_000 });
+        assert_eq!(Pacing::new(1), Pacing { interval: 1_000_000, early: 250_000, stall: 1_500_000 });
         assert_eq!(Pacing::new(144).interval, 6_944);
+    }
+
+    /// Plays a steady source through the pacing rules; returns (new pictures, repeats, smallest
+    /// timestamp step) over ten seconds.
+    fn play(fps: u32, source_fps: u64) -> (u32, u32, u64) {
+        let pace = Pacing::new(fps);
+        let (mut fresh, mut repeats, mut min_step) = (0, 0, u64::MAX);
+        let (mut slot, mut last_fresh, mut last_sent, mut last_pts) = (0, 0, 0, 0);
+        let (mut dirty, mut captured, mut arrivals) = (false, 0, 0u64);
+        let mut now = 0;
+        while now < 10_000_000 {
+            let arrival = arrivals * 1_000_000 / source_fps;
+            let next = arrival.min(pace.due(dirty, slot, last_fresh, last_sent));
+            now = next.max(now);
+            if now >= arrival {
+                dirty = true;
+                captured = arrival;
+                arrivals += 1;
+            }
+            if now >= pace.due(dirty, slot, last_fresh, last_sent) {
+                let pts = next_pts(dirty.then_some(captured), now, last_pts);
+                if last_pts > 0 {
+                    min_step = min_step.min(pts - last_pts);
+                }
+                if dirty {
+                    fresh += 1;
+                    last_fresh = now;
+                } else {
+                    repeats += 1;
+                }
+                last_sent = now;
+                slot = if now > slot + 2 * pace.interval { now } else { slot + pace.interval };
+                last_pts = pts;
+                dirty = false;
+            }
+        }
+        (fresh, repeats, min_step)
+    }
+
+    #[test]
+    fn a_slower_source_goes_out_at_its_own_rate() {
+        for (fps, source) in [(90, 74), (90, 60), (60, 45), (240, 100)] {
+            let (fresh, repeats, step) = play(fps, source);
+            assert!(fresh.abs_diff(source as u32 * 10) <= 2, "{fps} from {source}: {fresh} new");
+            assert_eq!(repeats, 0, "{fps} from {source}");
+            assert!(step >= MIN_PTS_GAP_US, "{fps} from {source}: step {step}");
+        }
+    }
+
+    #[test]
+    fn a_faster_source_is_capped() {
+        for (fps, source) in [(90, 100), (73, 100), (60, 144)] {
+            let (fresh, repeats, _) = play(fps, source);
+            assert!(fresh.abs_diff(fps * 10) <= 2, "{fps} from {source}: {fresh} new");
+            assert_eq!(repeats, 0, "{fps} from {source}");
+        }
+    }
+
+    #[test]
+    fn a_still_source_keeps_repeating_after_a_stall() {
+        let pace = Pacing::new(60);
+        assert_eq!(pace.due(false, 0, 1_000_000, 1_000_000), 1_050_000);
+        assert_eq!(pace.due(false, 0, 1_000_000, 1_060_000), 1_076_666);
+    }
+
+    #[test]
+    fn bitrate_makes_up_for_a_slower_source() {
+        let feed = |rate: &mut RateMatch, source: u64| (0..=source).filter_map(|i| rate.on_frame(i * 1_000_000 / source)).last();
+        let mut rate = RateMatch::new(240, 6_000_000);
+        assert!(feed(&mut rate, 60).is_some());
+        assert!(rate.current_bps.abs_diff(24_000_000) < 500_000, "{}", rate.current_bps);
+
+        // A source at the frame rate stays at the asked bitrate, and nothing goes past the limit.
+        let mut steady = RateMatch::new(60, 6_000_000);
+        assert_eq!(feed(&mut steady, 60), None);
+        let mut slow = RateMatch::new(240, 1_000_000);
+        feed(&mut slow, 5);
+        assert_eq!(slow.current_bps, 4_000_000);
+    }
+
+    #[test]
+    fn timestamps_stay_apart() {
+        assert_eq!(next_pts(Some(50_000), 90_000, 10_000), 50_000);
+        assert_eq!(next_pts(None, 90_000, 10_000), 90_000);
+        assert_eq!(next_pts(Some(100_000), 100_100, 100_100), 101_100);
     }
 
     #[test]
