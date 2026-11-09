@@ -126,6 +126,8 @@ export class Room extends DurableObject<Env> {
     if (existing) {
       const isOwner = !!ownerHash && !!opts.ownerKey && (await safeEqual(await sha256Hex(opts.ownerKey), ownerHash));
       if (!opts.admin && !isOwner) return { ok: false, reason: "forbidden" };
+    } else if (!opts.admin) {
+      return { ok: false, reason: "forbidden" };
     }
 
     const token = randomToken();
@@ -276,6 +278,7 @@ export class Room extends DurableObject<Env> {
     } catch {
       return ws.close(CloseCode.BadMessage, "Bad message");
     }
+    if (typeof msg !== "object" || msg === null) return ws.close(CloseCode.BadMessage, "Bad message");
 
     if (!att.authed) return this.hello(ws, msg);
     if (msg.type !== "sfu" || typeof msg.id !== "number") return;
@@ -317,6 +320,10 @@ export class Room extends DurableObject<Env> {
     // Tokens made before clientId was recorded fall back to matching this browser's previous name.
     await this.renameObs(name, clientId, (r) => r.clientId === clientId || (!r.clientId && !!lastName && r.name === lastName));
 
+    // The socket may have closed (or been replaced) while we awaited; authing it now would
+    // announce a member whose leave already came and went.
+    if (ws.readyState !== WebSocket.OPEN) return;
+
     const member: Authed = {
       authed: true,
       clientId,
@@ -330,6 +337,7 @@ export class Room extends DurableObject<Env> {
 
     this.send(ws, { type: "welcome", you: member.id, members: this.members(), clipsAllowed: this.clipsAllowed });
     if (usageLimit(this.env) !== undefined) await this.scheduleAlarm(USAGE_CHECK_MS);
+    if (!this.isMember(ws, member.id)) return;
     this.broadcast({ type: "join", member: toMember(member) }, ws);
   }
 
@@ -345,6 +353,7 @@ export class Room extends DurableObject<Env> {
         const res = await sfu(this.env, "POST", "/sessions/new");
         if (!res.sessionId) throw new SfuError("SFU did not return a session");
         // Re-read: other messages may have updated the attachment while we awaited.
+        if (!this.isMember(ws, me.id)) return { sessionId: res.sessionId };
         const { sessions } = ws.deserializeAttachment() as Authed;
         this.patch(ws, { sessions: [...sessions, res.sessionId].slice(-MAX_SESSIONS_PER_MEMBER) });
         return { sessionId: res.sessionId };
@@ -366,8 +375,9 @@ export class Room extends DurableObject<Env> {
         const published = (res.tracks ?? [])
           .filter((t) => !t.errorCode && isTrackName(t.trackName))
           .map((t) => t.trackName as TrackName);
-        if (published.includes("video")) {
-          const preset = PRESET_PATTERN.test(String(op.preset)) ? op.preset : "custom";
+        // Socket left during the SFU call: nobody should be told about a stream it can't keep alive.
+        if (published.includes("video") && this.isMember(ws, me.id)) {
+          const preset = typeof op.preset === "string" && PRESET_PATTERN.test(op.preset) ? op.preset : "custom";
           const height = Number.isInteger(op.height) && op.height! >= 100 && op.height! <= 8640 ? op.height : undefined;
           const updated = this.patch(ws, {
             stream: {
@@ -648,6 +658,11 @@ export class Room extends DurableObject<Env> {
     const next = { ...(ws.deserializeAttachment() as Authed), ...changes };
     ws.serializeAttachment(next);
     return next;
+  }
+
+  private isMember(ws: WebSocket, id: string): boolean {
+    const att = ws.deserializeAttachment() as Attachment | null;
+    return ws.readyState === WebSocket.OPEN && !!att?.authed && att.id === id;
   }
 
   private leave(ws: WebSocket): void {

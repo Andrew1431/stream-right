@@ -46,7 +46,7 @@ async function createRoom(req: Request, env: Env): Promise<Response> {
   if (!result.ok) {
     return result.reason === "exists"
       ? json({ error: "That room name is taken. Pick another, or rotate its link if it's yours." }, 409)
-      : json({ error: "Only the room's creator can rotate its link." }, 403);
+      : json({ error: "Only the room's creator can create a room or rotate its link." }, 403);
   }
 
   return json({ roomId, token: result.token, ownerKey: result.ownerKey } satisfies CreateRoomResponse, 201);
@@ -55,11 +55,14 @@ async function createRoom(req: Request, env: Env): Promise<Response> {
 // What a chat app shows for an invite link. The room's token is in the URL fragment, which link
 // previews never send, so this can't say whether the room is live and says nothing private.
 function withLinkPreview(page: Response, room: string, url: URL, ua: string): Response {
+  const discord = ua.includes("Discordbot");
   const tags = [
     ["og:site_name", "stream"],
     ["og:type", "website"],
-    ["og:title", `View streams in #${room}`],
-    ["og:description", "Friends streaming their screens. Click to watch."],
+    // Discord links an embed's title to the URL without its fragment, which drops the room's token
+    // and lands people on the "missing invite code" page. No title means no broken link to click.
+    ...(discord ? [] : [["og:title", `View streams in #${room}`]]),
+    ["og:description", discord ? `Click the link above to watch streams in #${room}.` : "Friends streaming their screens. Click to watch."],
     ["og:image", `${url.origin}/og.png`],
     ["og:image:width", "1200"],
     ["og:image:height", "630"],
@@ -69,8 +72,10 @@ function withLinkPreview(page: Response, room: string, url: URL, ua: string): Re
   const rewriter = new HTMLRewriter().on("head", {
     element: (head) => void head.append(tags.join(""), { html: true }),
   });
-  // Discord colours the embed's edge from theme-color; browsers would tint their toolbar with it.
-  if (ua.includes("Discordbot")) {
+  if (discord) {
+    // Discord would otherwise fall back to the page's <title> and link that instead.
+    rewriter.on("title", { element: (title) => void title.remove() });
+    // Discord colours the embed's edge from theme-color; browsers would tint their toolbar with it.
     rewriter.on('meta[name="theme-color"]', {
       element: (meta) => void meta.setAttribute("content", "#ff5a4e"),
     });
