@@ -8,6 +8,19 @@ mod windows_list;
 
 use tauri::Manager;
 
+// Tauri empties the app's resource table on every way out: closing the window, relaunch, and the
+// updater (which calls process::exit without an Exit event). Dropping this then ends the stream
+// properly, so viewers don't sit on a frozen picture until the server notices.
+struct StopOnExit(tauri::AppHandle);
+
+impl tauri::Resource for StopOnExit {}
+
+impl Drop for StopOnExit {
+    fn drop(&mut self) {
+        live::session::shutdown(&self.0, std::time::Duration::from_secs(5));
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         // Must be the first plugin. A stream-desktop:// link opens a second process; this hands
@@ -25,6 +38,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(live::session::LiveState::default())
         .setup(|_app| {
+            _app.resources_table().add(StopOnExit(_app.handle().clone()));
             // Installed builds get the scheme from the NSIS installer; dev builds register the
             // running exe so links work without installing.
             #[cfg(debug_assertions)]

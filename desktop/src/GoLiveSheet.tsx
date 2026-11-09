@@ -28,6 +28,7 @@ import {
   type SourceChange,
 } from "./live";
 import { Sheet } from "./Sheet";
+import { everyWhileFocused } from "./whileFocused";
 
 const THUMB_WIDTH = 320;
 // Previews refresh while the sheet is open, so a game that just went fullscreen shows up.
@@ -173,11 +174,10 @@ function AppPicker(props: { mode: AppListMode; list: string[]; onMode: (mode: Ap
         },
         () => !stopped && setFailed(true),
       );
-    refresh();
-    const id = setInterval(refresh, APPS_MS);
+    const stop = everyWhileFocused(refresh, APPS_MS);
     return () => {
       stopped = true;
-      clearInterval(id);
+      stop();
     };
   }, []);
 
@@ -395,6 +395,7 @@ export function GoLiveSheet(props: {
 
   useEffect(() => {
     let stopped = false;
+    let running = false;
     async function refresh() {
       const [ms, ws] = await Promise.all([listMonitors(), listWindows()]);
       if (stopped) return;
@@ -404,11 +405,21 @@ export function GoLiveSheet(props: {
       setPicked((p) => p ?? (sorted[0] ? { kind: "window", id: sorted[0].id } : ms[0] ? { kind: "monitor", id: ms[0].id } : null));
       await loadThumbs(ms, sorted, () => stopped, (key, t) => setThumbs((prev) => ({ ...prev, [key]: t })));
     }
-    refresh().catch((e) => setNote(String(e)));
-    const id = setInterval(() => refresh().catch(() => {}), REFRESH_MS);
+    // A slow pass (thumbnails are captured one at a time) makes the next tick wait, not pile on.
+    let first = true;
+    const stop = everyWhileFocused(() => {
+      if (running) return;
+      running = true;
+      refresh()
+        .catch((e) => first && setNote(String(e)))
+        .finally(() => {
+          running = false;
+          first = false;
+        });
+    }, REFRESH_MS);
     return () => {
       stopped = true;
-      clearInterval(id);
+      stop();
     };
   }, []);
 

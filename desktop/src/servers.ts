@@ -31,7 +31,9 @@ export function parseInvite(text: string): { origin: string; room: Room } | null
     const url = new URL(text.trim());
     const id = url.pathname.match(/^\/r\/([^/]+)\/?$/)?.[1];
     const token = new URLSearchParams(url.hash.slice(1)).get("k");
-    if (!id || !token || !/^https?:$/.test(url.protocol)) return null;
+    // Plain http would send the token in the clear, so only a machine's own address may use it.
+    const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+    if (!id || !token || !(url.protocol === "https:" || (url.protocol === "http:" && local))) return null;
     return { origin: url.origin, room: { id: decodeURIComponent(id), token } };
   } catch {
     return null;
@@ -41,8 +43,12 @@ export function parseInvite(text: string): { origin: string; room: Room } | null
 export function addInvite(servers: Server[], invite: { origin: string; room: Room }): Server[] {
   const existing = servers.find((s) => s.origin === invite.origin);
   if (!existing) return [...servers, { origin: invite.origin, rooms: [invite.room] }];
-  const rooms = existing.rooms.filter((r) => r.id !== invite.room.id);
-  return servers.map((s) => (s === existing ? { ...s, rooms: [...rooms, invite.room] } : s));
+  // A room already held keeps its place and its other fields (the owner key); only the token is new.
+  if (existing.rooms.some((r) => r.id === invite.room.id)) {
+    const rooms = existing.rooms.map((r) => (r.id === invite.room.id ? { ...r, token: invite.room.token } : r));
+    return servers.map((s) => (s === existing ? { ...s, rooms } : s));
+  }
+  return servers.map((s) => (s === existing ? { ...s, rooms: [...existing.rooms, invite.room] } : s));
 }
 
 // Swaps in a room's new link (after a rotation) where it was, or adds it if it's new.

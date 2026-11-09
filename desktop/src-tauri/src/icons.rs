@@ -1,7 +1,32 @@
 //! Program icons for the Go-live sheet: the large shell icon of an executable as a PNG data URL.
 
+/// Cached by path: the window list asks again every few seconds, often for many windows of one exe.
 #[cfg(windows)]
 pub fn exe_icon(path: &str) -> Option<String> {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    // Far more programs than anyone has open; past it, start over rather than track use.
+    const MAX: usize = 128;
+    static CACHE: Mutex<Option<HashMap<String, Option<String>>>> = Mutex::new(None);
+
+    if path.is_empty() {
+        return None;
+    }
+    if let Some(icon) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|c| c.get(path)) {
+        return icon.clone();
+    }
+    let icon = load(path);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let cache = cache.get_or_insert_with(HashMap::new);
+    if cache.len() >= MAX {
+        cache.clear();
+    }
+    cache.insert(path.to_string(), icon.clone());
+    icon
+}
+
+#[cfg(windows)]
+fn load(path: &str) -> Option<String> {
     use base64::Engine;
     use image::{ImageBuffer, Rgba};
     use windows::core::PCWSTR;

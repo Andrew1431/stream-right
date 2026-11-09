@@ -276,6 +276,38 @@ fn qpc() -> (i64, i64) {
     (now, freq.max(1))
 }
 
+/// Lifts the calling thread above a game that keeps every core busy. With a `task` (a Multimedia
+/// Class Scheduler task such as "Pro Audio") the thread joins MMCSS, the band audio engines run
+/// in; without one, or when MMCSS refuses, it gets `fallback` instead. Best effort: on failure the
+/// thread just stays at normal priority. Hold the guard for as long as the thread runs.
+#[cfg(windows)]
+pub(crate) fn boost_thread(task: Option<windows::core::PCWSTR>, fallback: windows::Win32::System::Threading::THREAD_PRIORITY) -> ThreadBoost {
+    use windows::Win32::System::Threading::{AvSetMmThreadCharacteristicsW, GetCurrentThread, SetThreadPriority};
+    let mut index = 0u32;
+    let mmcss = task.and_then(|task| unsafe { AvSetMmThreadCharacteristicsW(task, &mut index) }.ok());
+    if mmcss.is_none() {
+        unsafe {
+            let _ = SetThreadPriority(GetCurrentThread(), fallback);
+        }
+    }
+    ThreadBoost(mmcss)
+}
+
+/// Undoes an MMCSS registration from [`boost_thread`] when the thread is done.
+#[cfg(windows)]
+pub(crate) struct ThreadBoost(Option<windows::Win32::Foundation::HANDLE>);
+
+#[cfg(windows)]
+impl Drop for ThreadBoost {
+    fn drop(&mut self) {
+        if let Some(handle) = self.0.take() {
+            unsafe {
+                let _ = windows::Win32::System::Threading::AvRevertMmThreadCharacteristics(handle);
+            }
+        }
+    }
+}
+
 #[cfg(not(windows))]
 fn qpc() -> (i64, i64) {
     let ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();

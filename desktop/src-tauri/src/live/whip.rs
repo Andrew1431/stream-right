@@ -47,8 +47,8 @@ pub fn connect(
     keyframes: SyncSender<Option<usize>>,
     events: impl Fn(LiveEvent) + Send + 'static,
 ) -> Result<Stage, String> {
-    if !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
-        return Err(format!("not a WHIP URL: {endpoint}"));
+    if !safe_url(&endpoint) {
+        return Err(format!("not a secure WHIP URL: {endpoint}"));
     }
     if token.trim().is_empty() {
         return Err("missing stream key".into());
@@ -222,13 +222,17 @@ impl<F: Fn(LiveEvent)> Sender_<'_, F> {
                     continue;
                 }
             };
+            // A connection that came up starts the count again, so drops spread over a long
+            // session never add up to giving up; only failures in a row do.
+            if c.connected {
+                attempt = 0;
+            }
 
             let now = Instant::now();
             if let Some(why) = c.health(now) {
                 eprintln!("whip: connection lost ({why})");
-                let was_live = c.connected;
                 self.drop_conn(&agent, conn.take());
-                attempt = if was_live { 1 } else { attempt + 1 };
+                attempt += 1;
                 continue;
             }
             if c.connected && c.need_keyframe[..self.layers].contains(&true) && c.last_keyframe_request.is_none_or(|t| now - t > Duration::from_secs(1)) {
@@ -370,8 +374,11 @@ impl<F: Fn(LiveEvent)> Sender_<'_, F> {
 
     fn drop_conn(&self, agent: &ureq::Agent, conn: Option<Conn>) {
         if let Some(c) = conn {
-            // The server would replace it on the next POST anyway; this just ends it sooner.
-            delete(agent, &c.location, &self.token);
+            // The server would replace it on the next POST anyway; this just ends it sooner. Sent
+            // from a thread of its own: when the network is what failed it would sit out the HTTP
+            // timeout, and reconnecting mustn't wait for that.
+            let (agent, location, token) = (agent.clone(), c.location.clone(), self.token.clone());
+            let _ = std::thread::Builder::new().name("live-whip-delete".into()).spawn(move || delete(&agent, &location, &token));
         }
     }
 
@@ -474,6 +481,10 @@ impl<F: Fn(LiveEvent)> Sender_<'_, F> {
             return Err(if status >= 500 || status == 429 { Fail::Retry(msg) } else { Fail::Fatal(msg) });
         }
         let location = resolve_location(&self.endpoint, &location.ok_or_else(|| Fail::Fatal("WHIP answer has no Location".into()))?);
+        // The DELETE carries the stream key too.
+        if !safe_url(&location) {
+            return Err(Fail::Fatal(format!("WHIP answer's Location isn't secure: {location}")));
+        }
         let close = |msg: String| {
             delete(agent, &location, &self.token);
             msg
@@ -574,6 +585,19 @@ fn delete(agent: &ureq::Agent, location: &str, token: &str) {
     }
 }
 
+/// Whether the stream key may be sent to `url`: HTTPS anywhere, plain HTTP only to this machine
+/// (a dev server). Anything else would put the key on the wire in the clear.
+fn safe_url(url: &str) -> bool {
+    let Ok(url) = url::Url::parse(url) else { return false };
+    match (url.scheme(), url.host()) {
+        ("https", Some(_)) => true,
+        ("http", Some(url::Host::Domain(host))) => host.eq_ignore_ascii_case("localhost"),
+        ("http", Some(url::Host::Ipv4(ip))) => ip == std::net::Ipv4Addr::LOCALHOST,
+        ("http", Some(url::Host::Ipv6(ip))) => ip == std::net::Ipv6Addr::LOCALHOST,
+        _ => false,
+    }
+}
+
 /// `Location` may be a path; resolve it against the endpoint's origin.
 fn resolve_location(endpoint: &str, location: &str) -> String {
     if location.contains("://") {
@@ -657,6 +681,19 @@ mod tests {
         assert_eq!(stun_from_link(r#"<stun:stun.cloudflare.com:3478>; rel="ice-server""#).as_deref(), Some("stun.cloudflare.com:3478"));
         assert_eq!(stun_from_link(r#"<turn:t.example>; rel="ice-server", <stun:s.example>; rel="ice-server""#).as_deref(), Some("s.example:3478"));
         assert_eq!(stun_from_link("<https://x>; rel=next"), None);
+    }
+
+    #[test]
+    fn stream_key_only_goes_over_tls_or_to_this_machine() {
+        assert!(safe_url("https://stream.example/api/rooms/r/whip"));
+        assert!(safe_url("http://localhost:8787/api/rooms/r/whip"));
+        assert!(safe_url("http://127.0.0.1:8787/w"));
+        assert!(safe_url("http://[::1]:8787/w"));
+        assert!(!safe_url("http://stream.example/api/rooms/r/whip"));
+        assert!(!safe_url("http://localhost.evil.example/w"));
+        assert!(!safe_url("http://192.168.1.5/w"));
+        assert!(!safe_url("ftp://localhost/w"));
+        assert!(!safe_url("stream.example/whip"));
     }
 
     #[test]

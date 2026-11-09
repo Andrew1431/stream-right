@@ -26,8 +26,8 @@ use super::{layer_kbps, Clock, EncodedVideo, KeyframeRequests, Source, Stage, Vi
 use super::{layer_fps, layer_size};
 
 /// Starts capturing and encoding, one encoder per simulcast layer. Encoded frames go to `tx`; an
-/// IDR frame is produced on the requested layer (or all) as soon as possible after each message on
-/// `keyframes`, and at least every 2 seconds regardless. `commands` changes the settings while it
+/// IDR frame is produced on the requested layer (or all) after each message on `keyframes`, as
+/// soon as that layer is a second past its last IDR, and at least every 2 seconds regardless. `commands` changes the settings while it
 /// runs; dropping its sender just means no more changes.
 /// Errors before the thread starts (bad source, no encoder) are returned here; later failures
 /// end the stage and drop `tx`, which the sender sees as the stream ending.
@@ -47,6 +47,11 @@ const RESIZE_SETTLE: std::time::Duration = std::time::Duration::from_millis(500)
 /// Longest gap between IDR frames.
 #[cfg_attr(not(windows), allow(dead_code))]
 const IDR_INTERVAL_US: u64 = 2_000_000;
+/// Shortest gap before an IDR forced by a viewer's keyframe request (PLI/FIR). An IDR costs many
+/// normal frames' worth of bits, and a viewer on a lossy link can ask several times a second;
+/// forcing each one would spend the whole stream on keyframes.
+#[cfg_attr(not(windows), allow(dead_code))]
+const MIN_FORCED_IDR_GAP_US: u64 = 1_000_000;
 /// How long rebuilt encoders get to produce a keyframe before a settings change counts as
 /// accepted. Some drivers only fail once frames arrive.
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -129,6 +134,24 @@ impl RateMatch {
         self.current_bps = wanted;
         Some(wanted)
     }
+}
+
+/// Whether a requested keyframe may be forced on the frame at `pts`, the layer's last IDR having
+/// been at `last_idr`. A new encoder's first frame always may; after that the request waits, still
+/// pending, until [`MIN_FORCED_IDR_GAP_US`] has passed.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn may_force_key(sent_any: bool, last_idr: u64, pts: u64) -> bool {
+    !sent_any || pts >= last_idr + MIN_FORCED_IDR_GAP_US
+}
+
+/// The shortest gap WGC should leave between captured frames for a stream at `fps`, in 100 ns
+/// units: a little under half a frame interval, so every slot still finds a fresh frame waiting,
+/// but WGC doesn't copy each refresh of a fast monitor (240 a second on a 240 Hz screen for a
+/// 30 fps stream). Exactly half would equal a 60 Hz screen's refresh for a 30 fps stream, and a
+/// refresh arriving a hair early would be skipped.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn capture_interval_hns(fps: u32) -> i64 {
+    ((Pacing::new(fps).interval * 2 / 5).max(1_000) * 10) as i64
 }
 
 /// A frame's timestamp: when it was captured (a repeat: now), always clearly after the last one.
@@ -280,9 +303,10 @@ mod imp {
     use windows::Win32::Media::MediaFoundation::*;
     use windows::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, COINIT_MULTITHREADED};
     use windows::Win32::System::Threading::{
-        CreateEventW, CreateWaitableTimerExW, SetEvent, SetWaitableTimer, WaitForMultipleObjects, WaitForSingleObject,
-        CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS,
+        CreateEventW, CreateWaitableTimerExW, GetCurrentProcess, SetEvent, SetWaitableTimer, WaitForMultipleObjects, WaitForSingleObject,
+        CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, THREAD_PRIORITY_HIGHEST, TIMER_ALL_ACCESS,
     };
+    use windows::Wdk::Graphics::Direct3D::{D3DKMTSetProcessSchedulingPriorityClass, D3DKMT_SCHEDULINGPRIORITYCLASS_HIGH};
     use windows::Win32::System::Variant::{VARIANT, VT_BOOL, VT_UI4};
     use windows::Win32::System::WinRT::Direct3D11::{CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess};
     use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
@@ -353,6 +377,9 @@ mod imp {
         stop: &AtomicBool,
         ready: &mut Option<mpsc::Sender<Result<String, String>>>,
     ) -> Result<(), String> {
+        // Capture, pacing and encoder input all run here; a game holding every core mustn't push
+        // frames off their slots.
+        let _boost = crate::live::boost_thread(None, THREAD_PRIORITY_HIGHEST);
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
         MFStartup(MF_VERSION, MFSTARTUP_LITE).map_err(err("Media Foundation"))?;
         // Every COM object lives inside `pipeline`, so all are released before MFShutdown.
@@ -418,7 +445,7 @@ mod imp {
         for layer in &mut layers[1..] {
             layer.start_lower(&candidate, &gpu, initial, settings, count, clock, &tx, wake_h);
         }
-        let mut capture = Capture::new(item, &gpu, size, source, wake_h)?;
+        let mut capture = Capture::new(item, &gpu, size, source, settings.fps, wake_h)?;
         if let Some(ready) = ready.take() {
             let _ = ready.send(Ok(candidate.name.clone()));
         }
@@ -450,6 +477,7 @@ mod imp {
                     let Trial { previous, reply, .. } = trial.take().unwrap();
                     settings = previous;
                     pace = Pacing::new(settings.fps);
+                    capture.set_fps(settings.fps);
                     pending_size = None;
                     let content = content_of(&held, &capture);
                     if let Err(e) = rebuild(&mut layers, &candidate, &gpu, output_size(content.0, content.1, settings.height), settings, clock, &tx, wake_h) {
@@ -503,7 +531,7 @@ mod imp {
                 if let Ok(VideoCommand::Source { source, reply }) = &command {
                     let next = capture_item(*source).and_then(|item| {
                         let size = item.Size().map_err(err("capture item size"))?;
-                        Capture::new(item, &gpu, size, *source, wake_h)
+                        Capture::new(item, &gpu, size, *source, settings.fps, wake_h)
                     });
                     match next {
                         Ok(next) => {
@@ -541,6 +569,7 @@ mod imp {
                                 trial = Some(Trial { previous: settings, reply, since: Instant::now() });
                                 settings = asked;
                                 pace = Pacing::new(settings.fps);
+                                capture.set_fps(settings.fps);
                             }
                             Err(error) => {
                                 if let Err(e) = rebuild(&mut layers, &candidate, &gpu, output_size(content.0, content.1, settings.height), settings, clock, &tx, wake_h) {
@@ -569,7 +598,7 @@ mod imp {
                     };
                     if settled || !sent_any {
                         if let Err(e) = rebuild(&mut layers, &candidate, &gpu, wanted, settings, clock, &tx, wake_h) {
-                            return Err(format!("restarting the encoder at {}x{}: {e}", wanted.0, wanted.1));
+                            break 'main Err(format!("restarting the encoder at {}x{}: {e}", wanted.0, wanted.1));
                         }
                         pending_size = None;
                     }
@@ -723,8 +752,10 @@ mod imp {
         /// for more input yet.
         unsafe fn submit(&mut self, gpu: &Gpu, frame: &Held, pts: u64) -> Result<bool, String> {
             let Some(encoder) = &mut self.encoder else { return Ok(false) };
-            let since_idr = pts.saturating_sub(encoder.shared.last_idr_us.load(Ordering::Relaxed).max(self.last_forced));
-            let force = self.want_key || (self.sent_any && since_idr + self.interval / 2 >= IDR_INTERVAL_US);
+            let last_idr = encoder.shared.last_idr_us.load(Ordering::Relaxed).max(self.last_forced);
+            let since_idr = pts.saturating_sub(last_idr);
+            let asked = self.want_key && may_force_key(self.sent_any, last_idr, pts);
+            let force = asked || (self.sent_any && since_idr + self.interval / 2 >= IDR_INTERVAL_US);
             let conv = match &mut self.converter {
                 Some(c) if c.matches(&frame.texture_size, encoder.size) => c,
                 _ => self.converter.insert(Converter::new(gpu, frame.texture_size, encoder.size, self.fps)?),
@@ -811,7 +842,13 @@ mod imp {
             .map_err(err("creating the D3D11 device"))?;
             let (device, context): (ID3D11Device, ID3D11DeviceContext) = (device.unwrap(), context.unwrap());
             let _ = context.cast::<ID3D11Multithread>().map_err(err("D3D11 multithreading"))?.SetMultithreadProtected(true);
-            let winrt: IDirect3DDevice = CreateDirect3D11DeviceFromDXGIDevice(&device.cast::<IDXGIDevice>().map_err(err("DXGI device"))?)
+            let dxgi = device.cast::<IDXGIDevice>().map_err(err("DXGI device"))?;
+            // A game keeping the GPU at 100% would otherwise leave conversion and encoding
+            // queued behind its frames, and the stream drops to a few fps. Best effort: Windows
+            // may refuse either without the rights, and things still work, just unprioritized.
+            let _ = dxgi.SetGPUThreadPriority(7);
+            let _ = D3DKMTSetProcessSchedulingPriorityClass(GetCurrentProcess(), D3DKMT_SCHEDULINGPRIORITYCLASS_HIGH);
+            let winrt: IDirect3DDevice = CreateDirect3D11DeviceFromDXGIDevice(&dxgi)
                 .and_then(|d| d.cast())
                 .map_err(err("WinRT device"))?;
             let mut token = 0u32;
@@ -896,7 +933,7 @@ mod imp {
     }
 
     impl Capture {
-        unsafe fn new(item: GraphicsCaptureItem, gpu: &Gpu, size: SizeInt32, source: Source, wake: Handle) -> Result<Capture, String> {
+        unsafe fn new(item: GraphicsCaptureItem, gpu: &Gpu, size: SizeInt32, source: Source, fps: u32, wake: Handle) -> Result<Capture, String> {
             let size = SizeInt32 { Width: size.Width.max(1), Height: size.Height.max(1) };
             let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(&gpu.winrt, PIXEL_FORMAT, POOL_BUFFERS, size).map_err(err("frame pool"))?;
             let arrived = pool
@@ -917,8 +954,6 @@ mod imp {
             let session = pool.CreateCaptureSession(&item).map_err(err("capture session"))?;
             let _ = session.SetIsBorderRequired(false);
             let _ = session.SetIsCursorCaptureEnabled(true);
-            // WGC throttles to 50 fps unless told otherwise (Windows 11); pacing happens here instead.
-            let _ = session.SetMinUpdateInterval(windows::Foundation::TimeSpan { Duration: 10_000 });
             // Menus and dialogs the app opens show up in a window share too (Windows 11).
             let _ = session.SetIncludeSecondaryWindows(true);
             session.StartCapture().map_err(err("starting capture"))?;
@@ -926,7 +961,16 @@ mod imp {
                 Source::Window { id, .. } => Some(HWND(id as _)),
                 Source::Monitor { .. } => None,
             };
-            Ok(Capture { item, pool, session, winrt: gpu.winrt.clone(), pool_size: size, hwnd, closed, tokens: (arrived, closed_token) })
+            let capture = Capture { item, pool, session, winrt: gpu.winrt.clone(), pool_size: size, hwnd, closed, tokens: (arrived, closed_token) };
+            capture.set_fps(fps);
+            Ok(capture)
+        }
+
+        /// WGC throttles to 50 fps unless told otherwise (Windows 11), and told 1 ms it copies
+        /// every refresh of the monitor; this asks for about twice the stream's frame rate, and
+        /// pacing picks from those.
+        fn set_fps(&self, fps: u32) {
+            let _ = self.session.SetMinUpdateInterval(windows::Foundation::TimeSpan { Duration: capture_interval_hns(fps) });
         }
 
         fn closed(&self) -> bool {
@@ -1266,6 +1310,8 @@ mod imp {
             let events = std::thread::Builder::new()
                 .name("live-video-encoder".into())
                 .spawn(move || {
+                    // Input requests are answered here; a starved thread stalls the encoder.
+                    let _boost = crate::live::boost_thread(None, THREAD_PRIORITY_HIGHEST);
                     let moved = moved;
                     let (generator, mut output) = moved.0;
                     output.run(&generator, wake);
@@ -1550,6 +1596,23 @@ mod tests {
         let mut slow = RateMatch::new(240, 1_000_000);
         feed(&mut slow, 5);
         assert_eq!(slow.current_bps, 4_000_000);
+    }
+
+    #[test]
+    fn requested_keyframes_wait_a_second_after_the_last() {
+        assert!(may_force_key(false, 0, 0)); // a new encoder's first frame
+        assert!(may_force_key(false, 9_900_000, 10_000_000));
+        assert!(!may_force_key(true, 9_500_000, 10_000_000));
+        assert!(may_force_key(true, 9_000_000, 10_000_000));
+        assert!(may_force_key(true, 0, 5_000_000)); // no IDR out yet
+    }
+
+    #[test]
+    fn capture_runs_a_little_over_twice_the_frame_rate() {
+        assert_eq!(capture_interval_hns(30), 133_330);
+        assert_eq!(capture_interval_hns(60), 66_660);
+        assert_eq!(capture_interval_hns(240), 16_660);
+        assert_eq!(capture_interval_hns(1000), 10_000); // never below 1 ms
     }
 
     #[test]

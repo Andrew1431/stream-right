@@ -1,6 +1,6 @@
 [package]
 name = "stream-desktop"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2021"
 license = "MIT"
 
@@ -63,6 +63,8 @@ windows = { version = "0.61", features = [
   "Win32_System_WinRT_Graphics_Capture",
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
+  # D3DKMTSetProcessSchedulingPriorityClass: GPU scheduling priority for the capture process.
+  "Wdk_Graphics_Direct3D",
 ] }
 # libopus transpiled to Rust (c2rust): no CMake or C toolchain needed, unlike the libopus -sys crates.
 unsafe-libopus = "0.2"
@@ -81,6 +83,10 @@ opt-level = "s"
 panic = "abort"
 strip = true
 
+# The software Opus encoder runs in real time on the audio thread; size-optimized it costs more CPU.
+[profile.release.package.unsafe-libopus]
+opt-level = 3
+
 # Thumbnail scaling and JPEG encoding crawl unoptimized; keep dev captures snappy.
 [profile.dev.package.image]
 opt-level = 3
@@ -95,3 +101,4 @@ opt-level = 3
 overflow-checks = false
 # The probe's software encoder can't hold 30 fps at 720p unoptimized.
 [profile.dev.package.openh264-sys2]
+opt-level = 3

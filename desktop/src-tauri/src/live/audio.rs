@@ -75,6 +75,7 @@ mod imp {
     use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, BLOB, CLSCTX_ALL, COINIT_MULTITHREADED};
     use windows::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS};
     use windows::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
+    use windows::Win32::System::Threading::THREAD_PRIORITY_HIGHEST;
     use windows::Win32::System::Variant::VT_BLOB;
 
     const RATE: i64 = 48_000;
@@ -107,6 +108,9 @@ mod imp {
     }
 
     fn run(mode: AudioMode, clock: Clock, tx: AudioTx, controls: AudioControls, stop: &AtomicBool, ready: SyncSender<Result<(), String>>) {
+        // The engine polls every 5 ms and encodes on the wall clock; a CPU-bound game at normal
+        // priority would otherwise starve it into gaps and skips.
+        let _boost = super::super::boost_thread(Some(w!("Pro Audio")), THREAD_PRIORITY_HIGHEST);
         let _com = match Com::init() {
             Ok(com) => com,
             Err(e) => return drop(ready.send(Err(e))),

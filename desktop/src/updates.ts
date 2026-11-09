@@ -3,6 +3,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { useEffect, useRef, useState } from "react";
 import { inShell } from "./native";
+import { everyWhileFocused } from "./whileFocused";
 
 const CHECK_EVERY_MS = 4 * 60 * 60 * 1000;
 
@@ -23,8 +24,10 @@ export function useUpdates() {
     if (!inShell) return;
     getVersion().then(setVersion, () => {});
     let stopped = false;
+    let checking = false;
     async function look() {
-      if (pending.current) return;
+      if (pending.current || checking) return;
+      checking = true;
       try {
         const update = await check();
         if (!update || stopped) return;
@@ -34,13 +37,16 @@ export function useUpdates() {
         setState({ kind: "ready", version: update.version });
       } catch {
         // Offline, or no release yet: try again next time.
+      } finally {
+        checking = false;
       }
     }
-    look();
-    const id = setInterval(look, CHECK_EVERY_MS);
+    // Only while the window has focus, so a backgrounded app makes no requests; it catches up
+    // within a few seconds of coming back.
+    const stop = everyWhileFocused(look, CHECK_EVERY_MS);
     return () => {
       stopped = true;
-      clearInterval(id);
+      stop();
     };
   }, []);
 

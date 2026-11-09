@@ -840,6 +840,12 @@ img.target-icon {
   box-shadow: var(--float);
 }
 
+.plate-status {
+  align-self: center;
+  padding: 0 6px;
+  white-space: nowrap;
+}
+
 .plate-key {
   display: inline-flex;
   align-items: center;

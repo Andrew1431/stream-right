@@ -15,11 +15,13 @@ export function everyWhileFocused(run: () => void, everyMs: number): () => void 
   let last = Date.now();
   let stopped = false;
   run();
+  // Ticks at least twice per period, so a period as short as the tick isn't stretched to double.
   const id = setInterval(async () => {
-    if (Date.now() - last < everyMs || !(await focused()) || stopped) return;
-    last = Date.now();
+    const now = Date.now();
+    if (now - last < everyMs || !(await focused()) || stopped) return;
+    last = now;
     run();
-  }, CHECK_MS);
+  }, Math.min(CHECK_MS, everyMs / 2));
   return () => {
     stopped = true;
     clearInterval(id);

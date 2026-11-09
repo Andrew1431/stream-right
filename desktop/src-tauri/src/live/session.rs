@@ -1,12 +1,13 @@
 //! Runs one Go live session: wires the video, audio and sender stages together and reports
-//! progress to the UI as `live` events. One session at a time; starting another stops the first.
+//! progress to the UI as `live` events. One session at a time; starting another stops the first,
+//! and a stop that arrives while one is starting cancels that start.
 
 use super::{audio, video, whip, AudioControls, AudioMode, Clock, LiveEvent, MicControl, MicState, Source, Stage, VideoCommand, VideoSettings};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, sync_channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 // About 130 ms of video and 1 s of audio may queue while the sender catches up; beyond that the
 // capture side blocks, which is better than drifting further behind.
@@ -79,7 +80,43 @@ pub struct SourceChange {
 }
 
 #[derive(Default)]
-pub struct LiveState(Mutex<Option<Running>>);
+pub struct LiveState {
+    running: Mutex<Option<Running>>,
+    // Held for the whole of a go_live, so starts never overlap.
+    starting: tauri::async_runtime::Mutex<()>,
+    // Bumped by every stop. A start that began before the bump is torn down instead of stored.
+    stops: AtomicU64,
+}
+
+impl LiveState {
+    fn running(&self) -> std::sync::MutexGuard<'_, Option<Running>> {
+        self.running.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Cancels any start in flight and takes the session, if there is one, for stopping.
+    fn cancel(&self) -> Option<Running> {
+        // Before the take: a start that stores after this has already seen the bump and won't.
+        self.stops.fetch_add(1, Ordering::SeqCst);
+        self.running().take()
+    }
+}
+
+/// Stops the session and cancels any start, so viewers aren't left on a frozen picture when the
+/// app quits. Gives up after `wait` so quitting never hangs on a stuck encoder or server.
+pub fn shutdown(app: &AppHandle, wait: Duration) {
+    let app = app.clone();
+    let (done, finished) = sync_channel(1);
+    std::thread::spawn(move || {
+        let state = app.state::<LiveState>();
+        if let Some(running) = state.cancel() {
+            running.stop();
+        }
+        // A start in flight sees the cancel when it returns, stops itself, then lets go of this.
+        drop(state.starting.blocking_lock());
+        let _ = done.send(());
+    });
+    let _ = finished.recv_timeout(wait);
+}
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -100,22 +137,47 @@ pub struct GoLive {
 
 #[tauri::command]
 pub async fn go_live(app: AppHandle, state: State<'_, LiveState>, request: GoLive) -> Result<(), String> {
-    let previous = state.0.lock().unwrap_or_else(|e| e.into_inner()).take();
+    // Read before waiting for the turn, so a stop pressed while an earlier start finishes cancels this one too.
+    let stops = state.stops.load(Ordering::SeqCst);
+    let _turn = state.starting.lock().await;
+    let cancelled = || state.stops.load(Ordering::SeqCst) != stops;
+    if cancelled() {
+        return Err("cancelled".into());
+    }
+
+    let previous = state.running().take();
     if let Some(previous) = previous {
         tauri::async_runtime::spawn_blocking(move || previous.stop()).await.map_err(|e| e.to_string())?;
     }
+    if cancelled() {
+        return Err("cancelled".into());
+    }
 
-    let running = tauri::async_runtime::spawn_blocking(move || start(app, request))
-        .await
-        .map_err(|e| e.to_string())??;
-    *state.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(running);
+    let running = match tauri::async_runtime::spawn_blocking(move || start(app, request)).await.map_err(|e| e.to_string())? {
+        Ok(running) => running,
+        Err(_) if cancelled() => return Err("cancelled".into()),
+        Err(e) => return Err(e),
+    };
+    let unwanted = {
+        let mut slot = state.running();
+        if cancelled() {
+            Some(running)
+        } else {
+            *slot = Some(running);
+            None
+        }
+    };
+    if let Some(running) = unwanted {
+        tauri::async_runtime::spawn_blocking(move || running.stop()).await.map_err(|e| e.to_string())?;
+        return Err("cancelled".into());
+    }
     Ok(())
 }
 
 /// The running session, so a reloaded UI can pick it back up (and offer Stop and Modify).
 #[tauri::command]
 pub fn live_status(state: State<'_, LiveState>) -> Option<LiveStatus> {
-    let running = state.0.lock().unwrap_or_else(|e| e.into_inner());
+    let running = state.running();
     running.as_ref().filter(|r| !r.ended.load(Ordering::Relaxed)).map(|r| LiveStatus { target: r.target.clone(), config: r.config.clone(), mic: r.mic.state() })
 }
 
@@ -123,7 +185,7 @@ pub fn live_status(state: State<'_, LiveState>) -> Option<LiveStatus> {
 /// answers before the device is open (or closed).
 #[tauri::command]
 pub fn set_live_mic(state: State<'_, LiveState>, on: bool) -> Result<(), String> {
-    let running = state.0.lock().unwrap_or_else(|e| e.into_inner());
+    let running = state.running();
     let running = running.as_ref().filter(|r| !r.ended.load(Ordering::Relaxed)).ok_or("You're not streaming")?;
     running.mic.set_wanted(on);
     Ok(())
@@ -134,7 +196,7 @@ pub fn set_live_mic(state: State<'_, LiveState>, on: bool) -> Result<(), String>
 #[tauri::command]
 pub async fn modify_live(state: State<'_, LiveState>, audio: AudioMode, settings: VideoSettings, source: Option<SourceChange>) -> Result<(), String> {
     let commands = {
-        let running = state.0.lock().unwrap_or_else(|e| e.into_inner());
+        let running = state.running();
         running.as_ref().filter(|r| !r.ended.load(Ordering::Relaxed)).ok_or("You're not streaming")?.video_commands.clone()
     };
     let switched = source.is_some();
@@ -147,7 +209,7 @@ pub async fn modify_live(state: State<'_, LiveState>, audio: AudioMode, settings
             Ok(Err(e)) => return Err(format!("Couldn't switch to {}, so the stream stayed where it was. ({e})", change.source_label)),
             Err(_) => return Err("The stream didn't switch in time.".into()),
         }
-        let mut running = state.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut running = state.running();
         if let Some(running) = running.as_mut() {
             running.config.source = change.source;
             running.config.source_label = change.source_label;
@@ -166,7 +228,7 @@ pub async fn modify_live(state: State<'_, LiveState>, audio: AudioMode, settings
         Ok(Err(e)) => return Err(format!("Those settings didn't work, so the stream kept its old ones. ({e})")),
         Err(_) => return Err("The stream didn't take those settings in time.".into()),
     }
-    let mut running = state.0.lock().unwrap_or_else(|e| e.into_inner());
+    let mut running = state.running();
     if let Some(running) = running.as_mut() {
         running.config.settings = video::retarget(running.config.settings, settings);
         running.config.audio = audio.clone();
@@ -177,7 +239,8 @@ pub async fn modify_live(state: State<'_, LiveState>, audio: AudioMode, settings
 
 #[tauri::command]
 pub async fn stop_live(state: State<'_, LiveState>) -> Result<(), String> {
-    let running = state.0.lock().unwrap_or_else(|e| e.into_inner()).take();
+    // A start in flight stops itself and answers "cancelled" without waiting on this.
+    let running = state.cancel();
     if let Some(running) = running {
         tauri::async_runtime::spawn_blocking(move || running.stop()).await.map_err(|e| e.to_string())?;
     }

@@ -4,6 +4,7 @@ import { UsageCard } from "../../ui/usage";
 import { createRoom, fetchUsage, OwnerError, rotateRoom } from "./owner";
 import { inviteLink, serverLabel, type Room, type Server } from "./servers";
 import { Sheet } from "./Sheet";
+import { everyWhileFocused } from "./whileFocused";
 
 const USAGE_REFRESH_MS = 60_000;
 const host = (origin: string) => new URL(origin).host;
@@ -175,11 +176,10 @@ export function ServerUsage({ server }: { server: Server }) {
           setError("");
         })
         .catch((e) => !stopped && setError(message(e)));
-    poll();
-    const id = setInterval(poll, USAGE_REFRESH_MS);
+    const stop = everyWhileFocused(poll, USAGE_REFRESH_MS);
     return () => {
       stopped = true;
-      clearInterval(id);
+      stop();
     };
   }, [server.origin, server.creatorKey]);
 

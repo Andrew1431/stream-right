@@ -3,7 +3,7 @@
 
 /// JPEG data URL of the window scaled to at most `max_width`, or `None` when the window rendered
 /// nothing visible (every pixel transparent or black), so callers can drop invisible helper windows.
-/// Errors when no frame arrives, e.g. for minimized windows.
+/// Errors when no frame arrives, and straight away for minimized windows.
 #[tauri::command]
 pub async fn capture_thumbnail(id: isize, max_width: u32) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || imp::thumbnail(Target::Window(id), max_width))
@@ -77,7 +77,7 @@ mod imp {
     use windows::Win32::System::WinRT::Direct3D11::{CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess};
     use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
     use windows::Win32::System::WinRT::{RoInitialize, RO_INIT_MULTITHREADED};
-    use windows::Win32::UI::WindowsAndMessaging::IsWindow;
+    use windows::Win32::UI::WindowsAndMessaging::{IsIconic, IsWindow};
 
     const FIRST_FRAME_TIMEOUT: Duration = Duration::from_millis(1000);
 
@@ -95,8 +95,10 @@ mod imp {
     fn grab(target: Target, max_width: u32) -> Result<Frame, String> {
         let mut device = DEVICE.lock().unwrap_or_else(|e| e.into_inner());
         let result = unsafe { grab_inner(&mut device, target, max_width) };
-        if result.is_err() {
-            *device = None; // could be a removed device (driver reset); rebuild next time
+        // Most failures are the window's (closed, not drawing); only a removed device (driver
+        // reset, GPU change) needs rebuilding.
+        if result.is_err() && device.as_ref().is_some_and(|d| unsafe { d.GetDeviceRemovedReason() }.is_err()) {
+            *device = None;
         }
         result.map_err(|e| e.to_string())
     }
@@ -132,6 +134,10 @@ mod imp {
         if let Target::Window(id) = target {
             if !IsWindow(Some(HWND(id as _))).as_bool() {
                 return Err(windows::core::Error::new(windows::Win32::Foundation::E_INVALIDARG, "not a window"));
+            }
+            // A minimized window draws nothing, so waiting for a frame would only run out the timeout.
+            if IsIconic(HWND(id as _)).as_bool() {
+                return Err(windows::core::Error::new(windows::Win32::Foundation::E_FAIL, "window minimized"));
             }
         }
         // Blocking-pool threads have no apartment yet; an already-initialized one returns an ignorable error.

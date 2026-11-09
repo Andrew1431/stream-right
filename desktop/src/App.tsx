@@ -104,13 +104,26 @@ export function App() {
       })
       .catch(() => {});
   }, []);
+  // The Go live press in progress, if any. Cancelling it stops it before or after the stream starts.
+  const starting = useRef<{ cancelled: boolean; native: boolean } | null>(null);
+  // Returns true if it already told the app to stop.
+  function cancelStart(): boolean {
+    const attempt = starting.current;
+    if (!attempt) return false;
+    attempt.cancelled = true;
+    starting.current = null;
+    if (!attempt.native) return false;
+    stopLive().catch(() => {});
+    return true;
+  }
   async function stopStreaming() {
+    const sent = cancelStart();
     setLive(null);
     setUpload(0);
     setMic("off");
     setMicError("");
     setModifying(false);
-    await stopLive().catch((e) => setLiveError(String(e)));
+    if (!sent) await stopLive().catch((e) => setLiveError(String(e)));
   }
   function toggleMic() {
     setMicError("");
@@ -176,7 +189,7 @@ export function App() {
   const liveElsewhere = servers.some((s) => s.rooms.some((r) => r !== room && isLive(peeks[key(s.origin, r)])));
   // Stays with the shell, not the room frame: it has to work from any room, and the room page is
   // remote content that must never be able to switch a mic on.
-  const plate = live && <LivePlate room={live.room} mic={mic} floating={hidden} onMic={toggleMic} onModify={() => setModifying(true)} />;
+  const plate = live && <LivePlate room={live.room} mic={mic} reconnecting={live.event.state === "reconnecting"} floating={hidden} onMic={toggleMic} onModify={() => setModifying(true)} />;
 
   return (
     <div className={hidden ? "shell collapsed" : "shell"}>
@@ -279,6 +292,7 @@ export function App() {
             sidebarHidden={hidden}
             liveElsewhere={liveElsewhere}
             live={!!live && live.origin === server.origin && live.room === room.id}
+            reconnecting={live?.event.state === "reconnecting"}
             uploadKbps={upload}
             whip={requestWhip}
             onToggleSidebar={toggleSidebar}
@@ -355,20 +369,38 @@ export function App() {
       {goLive && server && room && (
         <GoLiveSheet
           roomName={room.id}
-          onClose={() => setGoLive(false)}
+          onClose={() => {
+            if (cancelStart()) setLive(null);
+            setGoLive(false);
+          }}
           onStart={async (choices) => {
             const ask = requestWhip.current;
             if (!ask) throw new Error("The room is still loading");
-            const whip = await ask();
-            setLiveError("");
-            setMic("off");
-            setMicError("");
-            setLive({ origin: server.origin, room: room.id, event: { state: "connecting" } });
+            const attempt = { cancelled: false, native: false };
+            starting.current = attempt;
             try {
-              await startLive(whip, { origin: server.origin, room: room.id }, choices);
+              const whip = await ask();
+              if (attempt.cancelled) return;
+              setLiveError("");
+              setMic("off");
+              setMicError("");
+              setLive({ origin: server.origin, room: room.id, event: { state: "connecting" } });
+              attempt.native = true;
+              try {
+                await startLive(whip, { origin: server.origin, room: room.id }, choices);
+              } catch (e) {
+                // A start cancelled by stop_live rejects with "cancelled": back to idle, nothing to show.
+                const cancelled = attempt.cancelled || (e instanceof Error ? e.message : String(e)) === "cancelled";
+                if (!attempt.cancelled) setLive(null);
+                if (cancelled) return;
+                throw e;
+              }
+              if (attempt.cancelled) return;
             } catch (e) {
-              setLive(null);
-              throw e;
+              if (!attempt.cancelled) throw e;
+              return;
+            } finally {
+              if (starting.current === attempt) starting.current = null;
             }
             // Going live over a running stream: that stream's "stopped" event cleared this, and a
             // mic can already be open in the new one, so the plate has to be back.
@@ -429,10 +461,11 @@ function RoomStatus({ peek }: { peek: Peek | null | undefined }) {
   );
 }
 
-function LivePlate(props: { room: string; mic: MicState; floating: boolean; onMic: () => void; onModify: () => void }) {
+function LivePlate(props: { room: string; mic: MicState; reconnecting: boolean; floating: boolean; onMic: () => void; onModify: () => void }) {
   const label = props.mic === "on" ? "Mic on" : props.mic === "opening" ? "Mic opening…" : "Mic off";
   return (
     <div className={props.floating ? "plate floating" : "plate"} role="group" aria-label={`Live in #${props.room}`}>
+      {props.reconnecting && <span className="plate-status small warn" role="status">Reconnecting…</span>}
       <button
         type="button"
         className={`plate-key ${props.mic}`}
@@ -456,6 +489,7 @@ function RoomFrame(props: {
   sidebarHidden: boolean;
   liveElsewhere: boolean;
   live: boolean;
+  reconnecting: boolean;
   uploadKbps: number;
   // Set to a function that asks the room for its WHIP endpoint and token.
   whip: { current: (() => Promise<Whip>) | null };
@@ -508,7 +542,8 @@ function RoomFrame(props: {
           p.onGoLive();
           break;
         case "stop-live":
-          p.onStopLive();
+          // p.live is true only when the stream is in this frame's own server and room.
+          if (p.live) p.onStopLive();
           break;
         case "whip": {
           const waiter = whipWaiters.current.get(e.data.id);
@@ -558,7 +593,8 @@ function RoomFrame(props: {
             <span className="muted small" title="Its owner can update it to get the app's layout">This server's stream is older than the app</span>
           </div>
           <div className="row">
-            {props.live && props.uploadKbps > 0 && <span className="muted small">{mbps(props.uploadKbps)} up</span>}
+            {props.live && props.reconnecting && <span className="small warn" role="status">Reconnecting…</span>}
+            {props.live && !props.reconnecting && props.uploadKbps > 0 && <span className="muted small">{mbps(props.uploadKbps)} up</span>}
             {props.live ? (
               <button type="button" className="danger" onClick={props.onStopLive}>Stop streaming</button>
             ) : (
