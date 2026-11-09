@@ -15,6 +15,27 @@ Send friends a link. Everyone in the room can share a screen, a game window or a
 - **No accounts.** Type a name and you're in.
 - **Nothing is recorded.** Video goes from the streamer through Cloudflare's relay straight to viewers and is never stored on your server or Cloudflare's. If a room's owner turns on [clips](#clips), viewers can save the last minute or two to their own device, and everyone in the room is told.
 
+## Contents
+
+- [What it costs](#what-it-costs)
+- [Set it up](#set-it-up)
+  - [1. Create a Realtime app](#1-create-a-realtime-app)
+  - [2. Deploy](#2-deploy)
+  - [3. Make a room](#3-make-a-room)
+  - [Use your own domain (optional)](#use-your-own-domain-optional)
+  - [Let friends make their own rooms](#let-friends-make-their-own-rooms)
+- [Update](#update)
+- [See your usage](#see-your-usage)
+- [Set a monthly limit](#set-a-monthly-limit)
+- [Lost or leaked keys](#lost-or-leaked-keys)
+- [Desktop app](#desktop-app)
+- [Install it as an app](#install-it-as-an-app)
+- [Streaming from OBS](#streaming-from-obs)
+- [Clips](#clips)
+- [Troubleshooting](#troubleshooting)
+- [Develop](#develop)
+- [License](#license)
+
 ## What it costs
 
 You pay Cloudflare directly, only for what's watched.
@@ -63,6 +84,7 @@ npx wrangler login
 npx wrangler secret put CREATOR_KEY
 npx wrangler secret put REALTIME_APP_ID
 npx wrangler secret put REALTIME_APP_SECRET
+npx wrangler secret put USAGE_LIMIT_GB   # optional, see below
 npm run deploy
 ```
 
@@ -71,6 +93,7 @@ npm run deploy
 | `CREATOR_KEY` | A password for making rooms. Use a long random string, e.g. from `openssl rand -base64 32`. |
 | `REALTIME_APP_ID` | The App ID from step 1. |
 | `REALTIME_APP_SECRET` | The App Secret from step 1. |
+| `USAGE_LIMIT_GB` | Optional. Rooms close for the rest of the month once usage reaches this many gigabytes. Set it to `950` to stay inside the free 1,000 GB and avoid any charges. It also needs `CF_API_TOKEN`; see [Set a monthly limit](#set-a-monthly-limit). |
 
 Your site is now at `https://stream.<your-subdomain>.workers.dev`.
 
