@@ -1,6 +1,6 @@
 import type { PullTrack, Rid, SfuResponse, Stream, TrackName } from "../shared/protocol";
 import { needsInsertableStreams, type Clipper } from "./clips/clipper";
-import type { RoomConnection } from "./connection";
+import { ServerError, type RoomConnection } from "./connection";
 
 import { settingsId, type ShareSettings } from "../ui/presets";
 
@@ -13,6 +13,11 @@ const REFERENCE_PIXELS = 1920 * 1080;
 const ICE_SERVERS: RTCIceServer[] = [{ urls: "stun:stun.cloudflare.com:3478" }];
 const ICE_GATHER_TIMEOUT_MS = 2_000;
 const CONNECT_TIMEOUT_MS = 15_000;
+const DISCONNECT_GRACE_MS = 5_000;
+const RECOVER_MIN_MS = 1_000;
+const RECOVER_MAX_MS = 30_000;
+// A recovery this long after the last one starts the backoff over.
+const RECOVER_RESET_MS = 60_000;
 
 // `insertable` is Chrome's flag for createEncodedStreams, only set while clips need it.
 function newPeerConnection(insertable = false) {
@@ -91,7 +96,7 @@ export class Publisher {
 
   constructor(
     private conn: RoomConnection,
-    private onEnded: () => void,
+    private onEnded: (reason?: string) => void,
   ) {}
 
   async start(settings: ShareSettings, noClips = false): Promise<MediaStream> {
@@ -153,6 +158,13 @@ export class Publisher {
       checkTracks(res);
       await pc.setRemoteDescription(res.sessionDescription!);
       await waitConnected(pc);
+      // Lost later while the room socket stays up: end the share so the room stops listing a
+      // dead stream. "disconnected" is left alone: it often recovers, and turns "failed" if not.
+      pc.addEventListener("connectionstatechange", () => {
+        if (pc !== this.pc || pc.connectionState !== "failed") return;
+        this.stop();
+        this.onEnded("Lost the connection to the stream server, so sharing stopped. Share again to resume.");
+      });
       return media;
     } catch (e) {
       this.stop();
@@ -191,6 +203,14 @@ export class Subscriber {
   // Whether this PeerConnection's receivers go through the clip worker. Fixed per connection.
   private clipping = false;
   private lastWant = new Map<Stream, Layer | null>();
+  private syncQueued = false;
+  // Tracks refused on this connection, with why. Not asked for again until the next sync
+  // runs, so one bad track can't fail every attempt.
+  private rejected = new Map<string, string>();
+  private graceTimer: ReturnType<typeof setTimeout> | undefined;
+  private recoverTimer: ReturnType<typeof setTimeout> | undefined;
+  private recoverDelay = RECOVER_MIN_MS;
+  private lastRecover = 0;
 
   constructor(
     private conn: RoomConnection,
@@ -203,18 +223,25 @@ export class Subscriber {
 
   // Bring pulled tracks in line with `want` (publisher stream → preferred video layer).
   // A null layer pulls audio only (used while the tab is hidden).
+  // Calls that queue up behind a running one collapse into one apply of the latest want.
   sync(want: Map<Stream, Layer | null>) {
     this.lastWant = want;
+    if (this.syncQueued) return;
+    this.syncQueued = true;
     this.queue = this.queue
-      .then(() => this.apply(want))
-      .then(() => this.onError(null))
+      .then(() => {
+        this.syncQueued = false;
+        this.rejected.clear();
+        return this.apply(this.lastWant);
+      })
+      .then(() => this.report())
       .catch(async (e) => {
         if (this.closed) return;
         // A failed exchange leaves the PeerConnection mid-negotiation; start clean and retry once.
         this.reset();
         try {
-          await this.apply(want);
-          this.onError(null);
+          await this.apply(this.lastWant);
+          this.report();
         } catch (e2) {
           if (!this.closed) this.onError(e2 instanceof Error ? e2 : new Error(String(e ?? e2)));
         }
@@ -239,6 +266,8 @@ export class Subscriber {
 
   close() {
     this.closed = true;
+    clearTimeout(this.graceTimer);
+    clearTimeout(this.recoverTimer);
     this.pc.close();
     this.streams.clear();
   }
@@ -261,9 +290,19 @@ export class Subscriber {
     this.pulled.clear();
     this.midToKey.clear();
     this.streams.clear();
+    this.rejected.clear();
+    clearTimeout(this.graceTimer);
     if (notify) this.onChange();
 
     const pc = this.pc;
+    // ICE can fail long after connecting while the room socket stays up (network change, NAT
+    // rebinding). "disconnected" often recovers by itself, so give it a moment first.
+    pc.addEventListener("connectionstatechange", () => {
+      if (pc !== this.pc) return;
+      clearTimeout(this.graceTimer);
+      if (pc.connectionState === "failed") this.recover(pc);
+      else if (pc.connectionState === "disconnected") this.graceTimer = setTimeout(() => this.recover(pc), DISCONNECT_GRACE_MS);
+    });
     pc.addEventListener("track", (e) => {
       if (pc !== this.pc) return;
       const key = this.midToKey.get(e.transceiver.mid ?? "");
@@ -276,15 +315,50 @@ export class Subscriber {
     });
   }
 
+  // Start over on a new PeerConnection and pull the current want again, backing off when
+  // recoveries come close together so a connection that keeps failing can't spin.
+  private recover(pc: RTCPeerConnection) {
+    if (this.closed || pc !== this.pc || this.recoverTimer) return;
+    this.recoverDelay =
+      Date.now() - this.lastRecover < RECOVER_RESET_MS ? Math.min(this.recoverDelay * 2, RECOVER_MAX_MS) : RECOVER_MIN_MS;
+    this.onError(new Error("Lost the connection to the stream server. Reconnecting…"));
+    this.recoverTimer = setTimeout(() => {
+      this.recoverTimer = undefined;
+      this.queue = this.queue
+        .then(async () => {
+          if (this.closed || pc !== this.pc) return;
+          this.lastRecover = Date.now();
+          this.reset();
+          await this.apply(this.lastWant);
+          this.report();
+        })
+        .catch(() => this.recover(this.pc));
+    }, this.recoverDelay);
+  }
+
+  // After an apply that went through: clear the banner, or name a track that was refused.
+  // Skipped when a newer sync is waiting, which is usually the member update explaining it.
+  private report() {
+    if (this.syncQueued) return;
+    const reason = this.rejected.values().next().value;
+    this.onError(reason ? new Error(reason) : null);
+  }
+
   private async apply(want: Map<Stream, Layer | null>) {
     if (this.closed) return;
 
+    // Only what the room lists as live right now: `want` can be older than the latest member
+    // update, and the room refuses a whole pull over one stream that has stopped.
+    const live = (t: PullTrack) =>
+      this.conn.snapshot.members.some((m) => m.stream?.sessionId === t.sessionId && m.stream.tracks.includes(t.trackName));
     const desired = new Map<string, PullTrack>();
     for (const [stream, layer] of want) {
       for (const trackName of stream.tracks) {
         if (trackName === "video" && !layer) continue;
         const t: PullTrack = { sessionId: stream.sessionId, trackName, ...(trackName === "video" ? layer : {}) };
-        desired.set(keyOf(t), t);
+        const k = keyOf(t);
+        if (!live(t) || (this.rejected.has(k) && !this.pulled.has(k))) continue;
+        desired.set(k, t);
       }
     }
 
@@ -296,9 +370,15 @@ export class Subscriber {
 
     for (const [k, t] of desired) {
       const p = this.pulled.get(k);
-      if (p && t.rid && (p.track.rid !== t.rid || !!p.track.fixed !== !!t.fixed)) {
-        await this.conn.request({ op: "setLayer", sessionId: this.sessionId!, mid: p.mid, track: { ...t, rid: t.rid } });
-        p.track = t;
+      if (p && t.rid && !this.rejected.has(k) && (p.track.rid !== t.rid || !!p.track.fixed !== !!t.fixed)) {
+        try {
+          await this.conn.request({ op: "setLayer", sessionId: this.sessionId!, mid: p.mid, track: { ...t, rid: t.rid } });
+          p.track = t;
+        } catch (e) {
+          // Refused without touching the connection: keep the layer it has.
+          if (!(e instanceof ServerError)) throw e;
+          this.rejected.set(k, e.message);
+        }
       }
     }
   }
@@ -310,7 +390,17 @@ export class Subscriber {
 
   private async pull(tracks: PullTrack[]) {
     const sessionId = await this.ensureSession();
-    const res = await this.conn.request({ op: "pull", sessionId, tracks });
+    let res: SfuResponse;
+    try {
+      res = await this.conn.request({ op: "pull", sessionId, tracks });
+    } catch (e) {
+      // Refused before anything changed on this connection, usually over one stream that just
+      // stopped. Pull the rest one by one so the good ones still come through.
+      if (!(e instanceof ServerError)) throw e;
+      if (tracks.length === 1) this.rejected.set(keyOf(tracks[0]), e.message);
+      else for (const t of tracks) await this.pull([t]);
+      return;
+    }
 
     for (const r of res.tracks ?? []) {
       if (r.errorCode || !r.mid || !r.sessionId || !r.trackName) continue;
@@ -327,8 +417,12 @@ export class Subscriber {
       await gatherIce(this.pc);
       await this.conn.request({ op: "renegotiate", sessionId, sdp: this.pc.localDescription!.sdp });
     }
-    await waitConnected(this.pc);
-    checkTracks(res);
+    // Tracks the SFU refused are set aside; the ones it accepted stay.
+    const failed = res.tracks?.find((t) => t.errorCode);
+    for (const t of tracks) {
+      if (!this.pulled.has(keyOf(t))) this.rejected.set(keyOf(t), failed?.errorDescription ?? failed?.errorCode ?? "Couldn't load that stream");
+    }
+    if (this.pulled.size) await waitConnected(this.pc);
   }
 
   private async closeTracks(keys: string[]) {

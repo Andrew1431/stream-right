@@ -140,7 +140,14 @@ function Room(props: { roomId: string; token: string; name: string; onRename: ()
   const [captured, setCaptured] = useState("");
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [starting, setStarting] = useState(false);
-  const publisher = useMemo(() => new Publisher(conn, () => setLocalStream(null)), [conn]);
+  const publisher = useMemo(
+    () =>
+      new Publisher(conn, (reason) => {
+        setLocalStream(null);
+        if (reason) setError(reason);
+      }),
+    [conn],
+  );
 
   // Receiving
   const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map());

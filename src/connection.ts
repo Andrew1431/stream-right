@@ -50,6 +50,9 @@ function tabClientId(): string {
 
 const REQUEST_TIMEOUT_MS = 15_000;
 
+// The room answered and refused the request, as opposed to a timeout or a dropped socket.
+export class ServerError extends Error {}
+
 type Pending = { resolve: (r: SfuResponse) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> };
 
 export class RoomConnection {
@@ -190,7 +193,7 @@ export class RoomConnection {
         this.pending.delete(msg.id);
         clearTimeout(p.timer);
         if (msg.ok) p.resolve(msg.data);
-        else p.reject(new Error(msg.error));
+        else p.reject(new ServerError(msg.error));
         break;
       }
     }
